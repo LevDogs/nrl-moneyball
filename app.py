@@ -5,7 +5,7 @@ from math import exp
 
 st.set_page_config(page_title="NRL Moneyball + Referee Factor", page_icon="🏈", layout="wide")
 st.title("🏉 NRL Moneyball + Referee Factor")
-st.markdown("**Round 15, 2026 - Transparent Model - Lineup & Ref Adjusted**")
+st.markdown("**Round 15, 2026 - Transparent - Lineup & Ref Adjusted**")
 
 # ====================== SIDEBAR ======================
 st.sidebar.header("Model Weights")
@@ -56,27 +56,32 @@ def calculate_prob(row):
 
     prob_home = 1 / (1 + exp(-score * 0.42))
     prob_home = max(0.35, min(0.90, prob_home))
-
     return round(prob_home, 4)
 
 df['Home_Prob'] = df.apply(calculate_prob, axis=1)
 df['Away_Prob'] = 1 - df['Home_Prob']
+
+# Fair Odds (normalized to 100%)
 df['Fair_Home'] = round(1 / df['Home_Prob'], 2)
 df['Fair_Away'] = round(1 / df['Away_Prob'], 2)
+
 df['Edge_pp'] = round((df['Home_Prob'] - (1 / df['Mkt_Home'])) * 100, 1)
 
-# Suggested Bet Logic
+# Clear Suggested Bets
 def get_suggested_bet(row):
-    if row['Edge_pp'] > 7:
-        return f"{row['Home']} -5.5 (STRONG)"
-    elif row['Edge_pp'] > 4:
-        return f"{row['Home']} H2H (value)"
-    elif row['Edge_pp'] < -6:
-        return f"{row['Away']} +6.5 (STRONG)"
-    elif row['Edge_pp'] < -3:
-        return f"{row['Away']} +X.5 (value)"
+    edge = row['Edge_pp']
+    home = row['Home']
+    away = row['Away']
+    if edge >= 8:
+        return f"**{home} -5.5 (STRONG)** - Strong yardage + home edge"
+    elif edge >= 5:
+        return f"**{home} H2H (value)** - Model edge"
+    elif edge <= -8:
+        return f"**{away} +6.5 (STRONG)** - Ref boost / market overlay"
+    elif edge <= -4:
+        return f"**{away} +X.5 (value)** - Away value"
     else:
-        return "No strong edge"
+        return "No strong edge - Pass"
 
 df['Suggested_Bet'] = df.apply(get_suggested_bet, axis=1)
 
@@ -84,12 +89,12 @@ df['Suggested_Bet'] = df.apply(get_suggested_bet, axis=1)
 st.subheader("Round 15 - Full Analysis")
 
 def color_edge(val):
-    if val > 5:
+    if val >= 5:
         return 'background-color: #006400; color: white'
-    elif val < -5:
+    elif val <= -5:
         return 'background-color: #8B0000; color: white'
     else:
-        return 'background-color: #333333'
+        return ''
 
 display_cols = ['Match', 'Lineup_Notes', 'Home_Prob', 'Away_Prob', 'Fair_Home', 'Fair_Away', 'Mkt_Home', 'Edge_pp', 'Suggested_Bet']
 
@@ -104,9 +109,14 @@ styled_df = df[display_cols].style.format({
 
 st.dataframe(styled_df, use_container_width=True, height=300)
 
+# Value Bets
 st.subheader("Value Bets (Edge >= 4.0pp)")
 value_bets = df[abs(df['Edge_pp']) >= 4].copy()
-st.dataframe(value_bets[['Match', 'Suggested_Bet', 'Edge_pp']], use_container_width=True)
+if len(value_bets):
+    for _, row in value_bets.iterrows():
+        st.markdown(f"- {row['Match']}: {row['Suggested_Bet']} (Edge: {row['Edge_pp']:+.1f}pp)")
+else:
+    st.info("No value bets at current settings.")
 
 # Season Tracking
 st.subheader("2026 Season Win % Tracking")
@@ -122,9 +132,12 @@ st.dataframe(season, use_container_width=True)
 col1, col2 = st.columns(2)
 with col1:
     fig = px.bar(df, x='Match', y='Home_Prob', title="Home Win Probability")
+    fig.update_layout(yaxis_tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 with col2:
-    fig2 = px.bar(df, x='Match', y='Edge_pp', title="Edge (pp)")
+    fig2 = px.bar(df, x='Match', y='Edge_pp', title="Edge (pp)",
+                  color_discrete_sequence=["#f0883e"])
+    fig2.add_hline(y=0, line_color="#555")
     st.plotly_chart(fig2, use_container_width=True)
 
 st.caption("Data from official NRL lists, ZeroTackle stats & refereebias.com - Gamble responsibly")
