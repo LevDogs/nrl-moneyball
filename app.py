@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from math import exp
 from io import BytesIO
 
-st.set_page_config(page_title="NRL Moneyball + Referee Factor", layout="wide")
+st.set_page_config(page_title="NRL Moneyball + Referee Factor", page_icon="🏈", layout="wide")
 st.title("🏉 NRL Moneyball + Referee Factor")
 st.markdown("**Round 15, 2026 - Transparent - Lineup & Ref Adjusted**")
 
