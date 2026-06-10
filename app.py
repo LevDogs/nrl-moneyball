@@ -82,12 +82,31 @@ df['Suggested_Bet'] = df.apply(get_suggested_bet, axis=1)
 
 # ====================== DISPLAY ======================
 st.subheader("Round 15 - Full Analysis")
-display_cols = ['Match', 'Lineup_Notes', 'Home_Prob', 'Away_Prob', 'Fair_Home', 'Fair_Away', 'Mkt_Home', 'Edge_pp', 'Suggested_Bet']
-st.dataframe(df[display_cols], use_container_width=True)
 
-st.subheader("Value Bets")
-value_bets = df[abs(df['Edge_pp']) >= 4]
-st.dataframe(value_bets[['Match', 'Suggested_Bet', 'Edge_pp']])
+def color_edge(val):
+    if val > 5:
+        return 'background-color: #006400; color: white'
+    elif val < -5:
+        return 'background-color: #8B0000; color: white'
+    else:
+        return 'background-color: #333333'
+
+display_cols = ['Match', 'Lineup_Notes', 'Home_Prob', 'Away_Prob', 'Fair_Home', 'Fair_Away', 'Mkt_Home', 'Edge_pp', 'Suggested_Bet']
+
+styled_df = df[display_cols].style.format({
+    'Home_Prob': '{:.1%}',
+    'Away_Prob': '{:.1%}',
+    'Fair_Home': '${:.2f}',
+    'Fair_Away': '${:.2f}',
+    'Mkt_Home': '${:.2f}',
+    'Edge_pp': '{:+.1f}'
+}).map(color_edge, subset=['Edge_pp'])
+
+st.dataframe(styled_df, use_container_width=True, height=300)
+
+st.subheader("Value Bets (Edge >= 4.0pp)")
+value_bets = df[abs(df['Edge_pp']) >= 4].copy()
+st.dataframe(value_bets[['Match', 'Suggested_Bet', 'Edge_pp']], use_container_width=True)
 
 # Season Tracking
 st.subheader("2026 Season Win % Tracking")
