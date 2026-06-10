@@ -77,17 +77,19 @@ def calculate_prob(row):
     adj_home_runm = row["Home_Runm"] * (1 - home_yardage_adj / 100)
     adj_away_runm = row["Away_Runm"] * (1 - away_yardage_adj / 100)
     attack_diff = ((adj_home_runm - adj_away_runm) / 100) + (
-        (row["Home_LB"] - row["Away_LB"]) * 2.5
+        (row["Home_LB"] - row["Away_LB"]) * 2.0
     )
-    defence_diff = (row["Home_PD"] - row["Away_PD"]) / 60
-    ref_adj = row["Ref_Boost_Home"] / 100 * 0.8
+    defence_diff = (row["Home_PD"] - row["Away_PD"]) / 80
+    ref_adj = row["Ref_Boost_Home"] / 150
     score = (
         (attack_diff * attack_w)
         + (defence_diff * defence_w)
-        + (home_w * 1.0)
+        + (home_w * 1.2)
         + (context_w * ref_adj)
     )
-    return round(1 / (1 + exp(-score * 0.6)), 4)
+    prob_home = 1 / (1 + exp(-score * 0.35))
+    prob_home = max(0.05, min(0.95, prob_home))
+    return round(prob_home, 4)
 
 
 def suggest_bet(prob_home, edge, home, away, threshold):
