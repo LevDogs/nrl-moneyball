@@ -303,9 +303,7 @@ with tab_season:
     ladder = SEASON.sort_values("Win%", ascending=False).reset_index(drop=True)
     ladder.index = ladder.index + 1
     st.dataframe(
-        ladder.style.format({"Win%": "{:.1f}%", "PD": "{:+d}"}).background_gradient(
-            subset=["Win%"], cmap="RdYlGn", vmin=0, vmax=100,
-        ),
+        ladder.style.format({"Win%": "{:.1f}%", "PD": "{:+d}"}),
         use_container_width=True,
     )
 
