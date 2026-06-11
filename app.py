@@ -5,26 +5,35 @@ import plotly.graph_objects as go
 from math import exp, log
 from io import BytesIO
 
-st.set_page_config(page_title="NRL Moneyball", page_icon="\U0001f3c8", layout="wide")
+st.set_page_config(page_title="NRL Moneyball", page_icon="\U0001f3c8", layout="centered")
 
 st.markdown("""<style>
     [data-testid="stAppViewContainer"] {background: #0a0e14}
     [data-testid="stSidebar"] {background: #111820}
-    [data-testid="stMetric"] {background: #111820; border: 1px solid #1e2a38; border-radius: 10px; padding: 12px}
-    [data-testid="stMetricValue"] {font-size: 1.6rem}
+    [data-testid="stMetric"] {background: #111820; border: 1px solid #1e2a38; border-radius: 10px; padding: 8px}
+    [data-testid="stMetricValue"] {font-size: 1.3rem}
+    [data-testid="stMetricLabel"] {font-size: 0.7rem}
     div[data-testid="stExpander"] details {border: 1px solid #1e2a38; border-radius: 8px; background: #111820}
+    .block-container {max-width: 100%; padding-left: 1rem; padding-right: 1rem}
     .bet-card {background: linear-gradient(135deg, #0d2818, #0a0e14); border: 1px solid #1a6334;
-        border-radius: 10px; padding: 16px; margin-bottom: 12px}
+        border-radius: 10px; padding: 12px; margin-bottom: 10px}
     .bet-card-strong {background: linear-gradient(135deg, #2d1506, #0a0e14); border: 1px solid #b45309;
-        border-radius: 10px; padding: 16px; margin-bottom: 12px}
-    .pass-card {background: #111820; border: 1px solid #1e2a38; border-radius: 10px; padding: 14px; margin-bottom: 10px}
-    .tag {display:inline-block; padding:2px 8px; border-radius:6px; font-size:0.75rem; font-weight:700; margin-right:6px}
+        border-radius: 10px; padding: 12px; margin-bottom: 10px}
+    .pass-card {background: #111820; border: 1px solid #1e2a38; border-radius: 10px; padding: 10px; margin-bottom: 8px}
+    .tag {display:inline-block; padding:2px 6px; border-radius:6px; font-size:0.7rem; font-weight:700; margin-right:4px; margin-bottom:2px}
     .tag-strong {background:#b45309; color:#fff}
     .tag-confident {background:#1a6334; color:#4ade80}
     .tag-lean {background:#1e3a5f; color:#93c5fd}
     .tag-skip {background:#1e2a38; color:#6b7280}
-    .tag-value {background:#065f46; color:#6ee7b7; margin-left:4px}
-    .tag-elo {background:#7c3aed; color:#c4b5fd; margin-left:4px}
+    .tag-value {background:#065f46; color:#6ee7b7; margin-left:2px}
+    .tag-elo {background:#7c3aed; color:#c4b5fd; margin-left:2px}
+    @media (max-width: 768px) {
+        [data-testid="stMetric"] {padding: 6px}
+        [data-testid="stMetricValue"] {font-size: 1.1rem}
+        .bet-card, .bet-card-strong, .pass-card {padding: 10px}
+        .stTabs [data-baseweb="tab-list"] {gap: 0px}
+        .stTabs [data-baseweb="tab"] {font-size: 0.75rem; padding: 6px 8px}
+    }
 </style>""", unsafe_allow_html=True)
 
 st.markdown("# \U0001f3c8 NRL Moneyball v3")
@@ -563,39 +572,15 @@ tab_dash, tab_deep, tab_totals, tab_power, tab_bt, tab_stats, tab_method = st.ta
 # ========================= DASHBOARD ==========================================
 with tab_dash:
     actionable = df[df["Strength"].isin(["STRONG", "CONFIDENT"])]
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Games", f"{len(df)} (Origin)")
-    c2.metric("Strong/Confident", len(actionable))
-    c3.metric("Value Flags", int(df["Has_Value"].sum()))
-    c4.metric("Ensemble R4+", f"{BT_POST_ENS/BT_POST_N:.0%}", help=f"{BT_POST_ENS}/{BT_POST_N} (excl. R1-3 burn-in)")
-    c5.metric("All Rounds", f"{BT_ENS/BT_N:.0%}", help=f"{BT_ENS}/{BT_N} incl. burn-in")
+    c2.metric("Picks", f"{len(actionable)} Strong")
+    c3.metric("Value", int(df["Has_Value"].sum()))
+    c4, c5 = st.columns(2)
+    c4.metric("Acc R4+", f"{BT_POST_ENS/BT_POST_N:.0%}", help=f"{BT_POST_ENS}/{BT_POST_N}")
+    c5.metric("Acc All", f"{BT_ENS/BT_N:.0%}", help=f"{BT_ENS}/{BT_N}")
 
     st.markdown("---")
-    st.subheader("Round 15 Predictions")
-
-    show = df[["Match","Prob","Away_Prob","Elo","Stats","Form","Pyth","Fair_H","Fair_A","Mkt_H","Mkt_A","Edge","Kelly","Bet","Strength"]].copy()
-    show["Value"] = df["Has_Value"].map({True: "YES", False: ""})
-    show.columns = ["Match","Home%","Away%","Elo","Stats","Form","Pyth","Fair H","Fair A","Mkt H","Mkt A","Edge","Kelly%","Bet","Signal","Value"]
-
-    def style_sig(v):
-        if v == "STRONG": return "background-color:#b45309; color:#fff; font-weight:700"
-        if v == "CONFIDENT": return "background-color:#0d3320; color:#4ade80; font-weight:700"
-        if v == "LEAN": return "background-color:#1e2a38; color:#93c5fd"
-        return "color:#6b7280"
-
-    st.dataframe(
-        show.style.format({
-            "Home%": "{:.1%}", "Away%": "{:.1%}", "Elo": "{:.0%}", "Stats": "{:.0%}",
-            "Form": "{:.0%}", "Pyth": "{:.0%}",
-            "Fair H": "${:.2f}", "Fair A": "${:.2f}", "Mkt H": "${:.2f}", "Mkt A": "${:.2f}",
-            "Edge": "{:+.1f}", "Kelly%": "{:.1f}",
-        }).map(style_sig, subset=["Signal"]).map(
-            lambda v: "background-color:#0d3320; color:#4ade80; font-weight:700" if v == "YES" else "", subset=["Value"]
-        ),
-        use_container_width=True, hide_index=True, height=260,
-    )
-    st.markdown("---")
-
     st.subheader("Selections")
     for _, r in df.iterrows():
         sig = r["Strength"]
@@ -618,46 +603,50 @@ with tab_dash:
 
         html = (
             '<div class="' + card + '">'
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-            '<div>' + tag + vtag + etag
-            + ' <b style="font-size:1.1rem;color:#e5e7eb">' + str(r["Bet"]) + "</b>"
-            + ' <span style="color:#6b7280;margin-left:8px">' + str(r["Match"]) + "</span></div>"
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;flex-wrap:wrap;gap:4px">'
+            '<div style="flex:1;min-width:200px">' + tag + vtag
+            + ' <b style="font-size:1rem;color:#e5e7eb">' + str(r["Bet"]) + "</b></div>"
             + '<div style="font-size:1.1rem;font-weight:700;color:#60a5fa">' + f"{prob:.0%}" + "</div></div>"
-            + '<div style="display:flex;gap:16px;color:#9ca3af;font-size:0.85rem;flex-wrap:wrap">'
-            + '<span>Fair: <b style="color:#60a5fa">$' + f"{fair:.2f}" + "</b></span>"
-            + '<span>Market: <b style="color:#e5e7eb">$' + f"{mkt:.2f}" + "</b></span>"
-            + '<span>Edge: <b style="color:' + edge_color + '">' + f"{r['Edge']:+.1f}pp" + "</b></span>"
+            + '<div style="color:#6b7280;font-size:0.8rem;margin-bottom:4px">' + str(r["Match"])
+            + ' <span style="margin-left:6px">Elo ' + str(int(r["H_Elo"])) + "-" + str(int(r["A_Elo"])) + "</span></div>"
+            + '<div style="display:flex;gap:8px 14px;color:#9ca3af;font-size:0.8rem;flex-wrap:wrap">'
+            + '<span>Fair <b style="color:#60a5fa">$' + f"{fair:.2f}" + "</b></span>"
+            + '<span>Mkt <b style="color:#e5e7eb">$' + f"{mkt:.2f}" + "</b></span>"
+            + '<span>Edge <b style="color:' + edge_color + '">' + f"{r['Edge']:+.1f}" + "</b></span>"
             + kelly_html
-            + '<span>Ref: <b style="color:#c084fc">' + f"{r['Ref_Boost']:+.1f}pp" + "</b></span>"
-            + '<span>Total: <b style="color:#f97316">' + f"{r['Exp_Total']:.0f}pts" + "</b></span></div>"
-            + '<div style="display:flex;gap:16px;color:#6b7280;font-size:0.78rem;margin-top:4px">'
+            + '<span>Ref <b style="color:#c084fc">' + f"{r['Ref_Boost']:+.1f}" + "</b></span>"
+            + '<span>Total <b style="color:#f97316">' + f"{r['Exp_Total']:.0f}" + "</b></span></div>"
+            + '<div style="display:flex;gap:6px 12px;color:#6b7280;font-size:0.72rem;margin-top:3px;flex-wrap:wrap">'
             + "<span>Elo:" + f"{r['Elo']:.0%}" + "</span>"
-            + " <span>Stats:" + f"{r['Stats']:.0%}" + "</span>"
-            + " <span>Form:" + f"{r['Form']:.0%}" + "</span>"
-            + " <span>Pyth:" + f"{r['Pyth']:.0%}" + "</span></div>"
-            + '<div style="color:#6b7280;font-size:0.78rem;margin-top:4px">Outs: '
+            + "<span>Stats:" + f"{r['Stats']:.0%}" + "</span>"
+            + "<span>Form:" + f"{r['Form']:.0%}" + "</span>"
+            + "<span>Pyth:" + f"{r['Pyth']:.0%}" + "</span></div>"
+            + '<div style="color:#6b7280;font-size:0.7rem;margin-top:3px;word-break:break-word">Outs: '
             + str(r["H_Outs"]) + " | " + str(r["A_Outs"]) + "</div></div>"
         )
         st.markdown(html, unsafe_allow_html=True)
 
     st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name="Ensemble", x=df["Match"], y=df["Prob"], marker_color="#3b82f6"))
-        fig.add_trace(go.Scatter(name="Elo", x=df["Match"], y=df["Elo"], mode="markers", marker=dict(color="#a855f7", size=10, symbol="diamond")))
-        fig.add_trace(go.Scatter(name="Market", x=df["Match"], y=[1/m["Mkt_Home"] for m in MATCHES], mode="markers", marker=dict(color="#f59e0b", size=10, symbol="x")))
-        fig.update_layout(title="Home Win: Ensemble vs Elo vs Market", yaxis_tickformat=".0%", yaxis_range=[0,1],
-            template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", margin=dict(l=40,r=20,t=40,b=60))
-        fig.add_hline(y=0.5, line_dash="dot", line_color="#334155")
-        st.plotly_chart(fig, use_container_width=True)
-    with col2:
-        colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Edge"]]
-        fig2 = go.Figure(go.Bar(x=df["Match"], y=df["Edge"], marker_color=colors))
-        fig2.update_layout(title="Market Edge (pp)", template="plotly_dark",
-            plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", yaxis_title="Edge (pp)", margin=dict(l=40,r=20,t=40,b=60))
-        fig2.add_hline(y=0, line_color="#334155")
-        st.plotly_chart(fig2, use_container_width=True)
+    short_names = [m.split(" vs ") for m in df["Match"]]
+    x_labels = [f"{h[:3]}v{a[:3]}" for h, a in short_names]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Ensemble", x=x_labels, y=df["Prob"].tolist(), marker_color="#3b82f6"))
+    fig.add_trace(go.Scatter(name="Elo", x=x_labels, y=df["Elo"].tolist(), mode="markers", marker=dict(color="#a855f7", size=8, symbol="diamond")))
+    fig.add_trace(go.Scatter(name="Market", x=x_labels, y=[1/m["Mkt_Home"] for m in MATCHES], mode="markers", marker=dict(color="#f59e0b", size=8, symbol="x")))
+    fig.update_layout(title="Home Win %", yaxis_tickformat=".0%", yaxis_range=[0,1],
+        template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+        margin=dict(l=35,r=10,t=35,b=40), height=280, legend=dict(orientation="h", y=-0.2))
+    fig.add_hline(y=0.5, line_dash="dot", line_color="#334155")
+    st.plotly_chart(fig, use_container_width=True)
+
+    colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Edge"]]
+    fig2 = go.Figure(go.Bar(x=x_labels, y=df["Edge"].tolist(), marker_color=colors))
+    fig2.update_layout(title="Market Edge (pp)", template="plotly_dark",
+        plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", yaxis_title="Edge",
+        margin=dict(l=35,r=10,t=35,b=40), height=250)
+    fig2.add_hline(y=0, line_color="#334155")
+    st.plotly_chart(fig2, use_container_width=True)
 
     buf = BytesIO(); df.to_csv(buf, index=False)
     st.download_button("Export CSV", buf.getvalue(), "nrl_r15_v3.csv", "text/csv")
@@ -670,23 +659,15 @@ with tab_deep:
         with st.expander(f"{g['Match']}  |  {g['Bet']}  |  {g['WinnerProb']:.0%}  |  Edge {g['Edge']:+.1f}pp"):
             st.markdown(f"**{g['Venue']}** -- {g['Kickoff']} -- Ref: {g['Referee']} ({g['Ref_Boost']:+.1f}pp)")
 
-            c1, c2 = st.columns(2)
-            with c1:
-                s = SEASON[g["Home"]]; sc = SCORING.get(g["Home"], {})
-                st.markdown(f"### {g['Home']} (Home)")
-                st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {g['H_Elo']:.0f}")
-                st.markdown(f"**Pyth Win%:** {sc.get('pyth', 0.5):.0%} | **Pt Diff:** {sc.get('point_diff', 0):+.1f}/game")
-                st.markdown(f"**Atk:** #{g['H_Atk_rank']} | **Def:** #{g['H_Def_rank']}")
-                st.markdown(f"**Form (margin):** {g['H_Form']:+.1f} ppg | **L5 avg:** {sc.get('recent_scored', 0):.0f}-{sc.get('recent_conceded', 0):.0f}")
-                st.caption(f"Outs: {g['H_Outs']}")
-            with c2:
-                s = SEASON[g["Away"]]; sc = SCORING.get(g["Away"], {})
-                st.markdown(f"### {g['Away']} (Away)")
-                st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {g['A_Elo']:.0f}")
-                st.markdown(f"**Pyth Win%:** {sc.get('pyth', 0.5):.0%} | **Pt Diff:** {sc.get('point_diff', 0):+.1f}/game")
-                st.markdown(f"**Atk:** #{g['A_Atk_rank']} | **Def:** #{g['A_Def_rank']}")
-                st.markdown(f"**Form (margin):** {g['A_Form']:+.1f} ppg | **L5 avg:** {sc.get('recent_scored', 0):.0f}-{sc.get('recent_conceded', 0):.0f}")
-                st.caption(f"Outs: {g['A_Outs']}")
+            for team_key, label, elo_key, atk_key, def_key, form_key, outs_key in [
+                ("Home", "Home", "H_Elo", "H_Atk_rank", "H_Def_rank", "H_Form", "H_Outs"),
+                ("Away", "Away", "A_Elo", "A_Atk_rank", "A_Def_rank", "A_Form", "A_Outs"),
+            ]:
+                s = SEASON[g[team_key]]; sc = SCORING.get(g[team_key], {})
+                st.markdown(f"**{g[team_key]} ({label})** -- {s['W']}W-{s['L']}L | Elo {g[elo_key]:.0f} | "
+                    f"Pyth {sc.get('pyth', 0.5):.0%} | Diff {sc.get('point_diff', 0):+.1f} | "
+                    f"Atk #{g[atk_key]} Def #{g[def_key]} | Form {g[form_key]:+.1f}")
+                st.caption(f"Outs: {g[outs_key]}")
 
             st.markdown("**Signal Decomposition:**")
             signals = {"Elo": g["Elo"], "Stats": g["Stats"], "Form": g["Form"], "Pyth": g["Pyth"], "Ensemble": g["Prob"]}
@@ -697,8 +678,9 @@ with tab_deep:
             fig_sig.add_hline(y=50, line_dash="dot", line_color="#334155")
             fig_sig.add_hline(y=mkt_impl*100, line_dash="dash", line_color="#f59e0b",
                 annotation_text=f"Market {mkt_impl:.0%}", annotation_position="top right")
-            fig_sig.update_layout(title=f"Home Win Probability by Signal ({g['Home']})", yaxis_title="%", yaxis_range=[0,100],
-                template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300)
+            fig_sig.update_layout(title="Home Win % by Signal", yaxis_title="%", yaxis_range=[0,100],
+                template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+                height=260, margin=dict(l=35,r=10,t=35,b=30))
             st.plotly_chart(fig_sig, use_container_width=True)
 
             h2h = get_h2h(g["Home"], g["Away"])
@@ -769,25 +751,22 @@ with tab_power:
 
     pr_df = pd.DataFrame(pr).sort_values("Elo", ascending=False)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        elo_sorted = pr_df.sort_values("Elo")
-        fig_elo = px.bar(elo_sorted, x="Elo", y="Team", orientation="h", title="Elo Ratings",
-            color="Elo", color_continuous_scale="Viridis", template="plotly_dark")
-        fig_elo.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", coloraxis_showscale=False,
-            yaxis_title="", xaxis_range=[1200, 1800])
-        fig_elo.add_vline(x=1500, line_dash="dot", line_color="#334155", annotation_text="Start")
-        st.plotly_chart(fig_elo, use_container_width=True)
+    elo_sorted = pr_df.sort_values("Elo")
+    fig_elo = px.bar(elo_sorted, x="Elo", y="Team", orientation="h", title="Elo Ratings",
+        color="Elo", color_continuous_scale="Viridis", template="plotly_dark")
+    fig_elo.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", coloraxis_showscale=False,
+        yaxis_title="", xaxis_range=[1200, 1800], margin=dict(l=80,r=10,t=35,b=30), height=500)
+    fig_elo.add_vline(x=1500, line_dash="dot", line_color="#334155", annotation_text="Start")
+    st.plotly_chart(fig_elo, use_container_width=True)
 
-    with col2:
-        fig_sc = px.scatter(pr_df, x="Atk Z", y="Def Z", text="Team", color="Win%",
-            color_continuous_scale="RdYlGn", title="Attack vs Defence (top-right = best)", template="plotly_dark")
-        fig_sc.update_traces(textposition="top center", marker=dict(size=12))
-        fig_sc.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=450,
-            xaxis_title="Attack z", yaxis_title="Defence z")
-        fig_sc.add_hline(y=0, line_dash="dot", line_color="#334155")
-        fig_sc.add_vline(x=0, line_dash="dot", line_color="#334155")
-        st.plotly_chart(fig_sc, use_container_width=True)
+    fig_sc = px.scatter(pr_df, x="Atk Z", y="Def Z", text="Team", color="Win%",
+        color_continuous_scale="RdYlGn", title="Attack vs Defence (top-right = best)", template="plotly_dark")
+    fig_sc.update_traces(textposition="top center", marker=dict(size=10))
+    fig_sc.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=400,
+        xaxis_title="Attack z", yaxis_title="Defence z", margin=dict(l=40,r=10,t=35,b=40))
+    fig_sc.add_hline(y=0, line_dash="dot", line_color="#334155")
+    fig_sc.add_vline(x=0, line_dash="dot", line_color="#334155")
+    st.plotly_chart(fig_sc, use_container_width=True)
 
     st.dataframe(pr_df.style.format({
         "Elo": "{:.0f}", "Atk Z": "{:+.2f}", "Def Z": "{:+.2f}",
@@ -808,7 +787,8 @@ with tab_power:
             fig_hist.add_trace(go.Scatter(x=rds, y=vals, name=team, mode="lines+markers",
                 line=dict(color=colors[i % len(colors)], width=2), marker=dict(size=4)))
     fig_hist.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-        xaxis_title="Round", yaxis_title="Elo Rating", height=400, xaxis=dict(dtick=1))
+        xaxis_title="Round", yaxis_title="Elo", height=320, xaxis=dict(dtick=1),
+        margin=dict(l=40,r=10,t=10,b=35), legend=dict(orientation="h", y=-0.25, font=dict(size=10)))
     fig_hist.add_hline(y=1500, line_dash="dot", line_color="#334155")
     st.plotly_chart(fig_hist, use_container_width=True)
     st.caption("Showing top 8 teams by current Elo. All teams start at 1500.")
@@ -821,17 +801,18 @@ with tab_bt:
                 f"Post burn-in (R4+): **{BT_POST_N} matches**. "
                 "Elo and Form are fully forward-looking. Stats uses full-season NRL.com data (leakage caveat).")
 
-    st.markdown("##### Post Burn-in (R4+) -- excludes early rounds where Elo has no differentiation")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Ensemble R4+", f"{BT_POST_ENS/BT_POST_N:.1%}", help=f"{BT_POST_ENS}/{BT_POST_N}")
-    c2.metric("Elo R4+", f"{BT_POST_ELO/BT_POST_N:.1%}", help=f"{BT_POST_ELO}/{BT_POST_N}")
-    c3.metric("Stats R4+", f"{BT_POST_STATS/BT_POST_N:.1%}", help=f"{BT_POST_STATS}/{BT_POST_N}")
-    c4.metric("Form R4+", f"{BT_POST_FORM/BT_POST_N:.1%}", help=f"{BT_POST_FORM}/{BT_POST_N}")
-    c5.metric("Brier Score", f"{BT_BRIER:.3f}")
+    st.markdown("##### Post Burn-in (R4+)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Ensemble", f"{BT_POST_ENS/BT_POST_N:.1%}", help=f"{BT_POST_ENS}/{BT_POST_N}")
+    c2.metric("Elo", f"{BT_POST_ELO/BT_POST_N:.1%}")
+    c3.metric("Stats", f"{BT_POST_STATS/BT_POST_N:.1%}")
+    c4, c5 = st.columns(2)
+    c4.metric("Form", f"{BT_POST_FORM/BT_POST_N:.1%}")
+    c5.metric("Brier", f"{BT_BRIER:.3f}")
 
-    st.markdown("##### All Rounds (incl. burn-in)")
+    st.markdown("##### All Rounds")
     c1b, c2b, c3b, c4b = st.columns(4)
-    c1b.metric("Ensemble", f"{BT_ENS/BT_N:.1%}", help=f"{BT_ENS}/{BT_N}")
+    c1b.metric("Ens", f"{BT_ENS/BT_N:.1%}")
     c2b.metric("Elo", f"{BT_ELO/BT_N:.1%}")
     c3b.metric("Stats", f"{BT_STATS/BT_N:.1%}")
     c4b.metric("Form", f"{BT_FORM/BT_N:.1%}")
@@ -871,7 +852,8 @@ with tab_bt:
     fig_rd.add_trace(go.Scatter(x=rd_df["Round"], y=rd_df["Elo"], name="Elo Only",
         line=dict(color="#a855f7", width=2, dash="dot"), mode="lines+markers", marker=dict(size=5)))
     fig_rd.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-        yaxis_title="Accuracy %", yaxis_range=[0, 100], height=400, xaxis=dict(dtick=1))
+        yaxis_title="Acc %", yaxis_range=[0, 100], height=320, xaxis=dict(dtick=1),
+        margin=dict(l=35,r=10,t=10,b=30), legend=dict(orientation="h", y=-0.2))
     fig_rd.add_hline(y=50, line_dash="dot", line_color="#334155", annotation_text="Coin flip")
     st.plotly_chart(fig_rd, use_container_width=True)
 
@@ -911,7 +893,8 @@ with tab_bt:
     fig_cal.add_trace(go.Scatter(x=cal_df["Confidence"], y=cal_df["Predicted"], name="Perfect Calibration",
         line=dict(color="#f59e0b", width=2, dash="dash"), mode="lines+markers"))
     fig_cal.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-        yaxis_title="Win %", title="Calibration: Predicted vs Actual", height=350)
+        yaxis_title="Win %", title="Calibration", height=280, margin=dict(l=35,r=10,t=35,b=30),
+        legend=dict(orientation="h", y=-0.25))
     st.plotly_chart(fig_cal, use_container_width=True)
 
     st.markdown("---")
@@ -948,24 +931,22 @@ with tab_stats:
     st.subheader("NRL.com Team Stats (Per-Game Averages)")
 
     for m in MATCHES:
-        with st.expander(f"{m['Home']} vs {m['Away']} -- {m['Venue']}"):
-            col_h, col_a = st.columns(2)
-            for col, team in [(col_h, m["Home"]), (col_a, m["Away"])]:
-                with col:
-                    s = SEASON[team]; sc = SCORING.get(team, {}); z = ZSCORES.get(team, {})
-                    st.markdown(f"### {team}")
-                    st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {ELO_RATINGS.get(team, 1500):.0f}")
-                    st.markdown(f"**Attack:** z={z.get('atk_z',0):+.2f} (#{z.get('atk_rank',0)})")
-                    st.markdown(f"**Defence:** z={z.get('def_z',0):+.2f} (#{z.get('def_rank',0)})")
-                    st.markdown(f"**L5:** {sc.get('recent_scored',0):.0f} scored, {sc.get('recent_conceded',0):.0f} conceded")
-                    st.markdown(f"**Pyth:** {sc.get('pyth',0.5):.0%} | **Form margin:** {sc.get('form_margin',0):+.1f}")
+        with st.expander(f"{m['Home']} vs {m['Away']}"):
+            for team in [m["Home"], m["Away"]]:
+                s = SEASON[team]; sc = SCORING.get(team, {}); z = ZSCORES.get(team, {})
+                st.markdown(f"**{team}** -- {s['W']}W-{s['L']}L | Elo {ELO_RATINGS.get(team, 1500):.0f} | "
+                    f"Atk z={z.get('atk_z',0):+.2f} Def z={z.get('def_z',0):+.2f} | "
+                    f"L5: {sc.get('recent_scored',0):.0f}-{sc.get('recent_conceded',0):.0f} | "
+                    f"Pyth {sc.get('pyth',0.5):.0%}")
 
+            cmp_short = ["Pts", "Tries", "LB", "TB", "PCM", "TA", "Ofl", "RunM"]
             cmp = ["Points", "Tries", "Linebreaks", "TackleBreaks", "PCM", "TryAssists", "Offloads", "RunMetres"]
             fig = go.Figure()
-            fig.add_trace(go.Bar(name=m["Home"], x=cmp, y=[TEAM_STATS[m["Home"]][s] for s in cmp], marker_color="#3b82f6"))
-            fig.add_trace(go.Bar(name=m["Away"], x=cmp, y=[TEAM_STATS[m["Away"]][s] for s in cmp], marker_color="#ef4444"))
+            fig.add_trace(go.Bar(name=m["Home"], x=cmp_short, y=[TEAM_STATS[m["Home"]][s] for s in cmp], marker_color="#3b82f6"))
+            fig.add_trace(go.Bar(name=m["Away"], x=cmp_short, y=[TEAM_STATS[m["Away"]][s] for s in cmp], marker_color="#ef4444"))
             fig.update_layout(barmode="group", template="plotly_dark", title="Attack Stats",
-                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300)
+                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=260,
+                margin=dict(l=35,r=10,t=35,b=30), legend=dict(orientation="h", y=-0.25))
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
