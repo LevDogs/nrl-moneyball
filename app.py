@@ -32,17 +32,20 @@ st.markdown("**Round 15, 2026 -- Origin II Split Round -- Multi-Signal Ensemble*
 
 # -- Sidebar --
 st.sidebar.header("Ensemble Weights")
-elo_w = st.sidebar.slider("Elo Rating", 0.15, 0.60, 0.35)
-stats_w = st.sidebar.slider("Team Stats (NRL.com)", 0.05, 0.40, 0.20)
-form_w = st.sidebar.slider("Form + Pythagorean", 0.05, 0.30, 0.25)
-home_w = st.sidebar.slider("Home Advantage", 0.02, 0.15, 0.10)
-context_w = st.sidebar.slider("Referee Context", 0.02, 0.15, 0.10)
+st.sidebar.caption("Defaults are auto-optimized from backtest")
+elo_w = st.sidebar.slider("Elo Rating", 0.05, 0.50, 0.15)
+stats_w = st.sidebar.slider("Team Stats (NRL.com)", 0.10, 0.50, 0.35)
+form_w = st.sidebar.slider("Form + Pythagorean", 0.05, 0.30, 0.20)
+home_w = st.sidebar.slider("Home Advantage", 0.02, 0.15, 0.05)
+context_w = st.sidebar.slider("Referee Context", 0.02, 0.15, 0.05)
+market_w = st.sidebar.slider("Market Odds (live only)", 0.0, 0.50, 0.20)
 wt = elo_w + stats_w + form_w + home_w + context_w
-st.sidebar.caption(f"Sum: {wt:.2f}" + (" ok" if abs(wt - 1.0) <= 0.03 else " -- adjust to ~1.00"))
+st.sidebar.caption(f"Model sum: {wt:.2f}" + (" ok" if abs(wt - 1.0) <= 0.03 else " -- adjust to ~1.00"))
+st.sidebar.caption(f"Market blended at {market_w:.0%} for live predictions")
 
 with st.sidebar.expander("Elo Settings"):
-    elo_k = st.slider("K-Factor", 16, 64, 32, help="Higher = more reactive to recent results")
-    elo_home_pts = st.slider("Home Advantage (Elo pts)", 20, 80, 50)
+    elo_k = st.slider("K-Factor", 16, 64, 40, help="Higher = more reactive to recent results")
+    elo_home_pts = st.slider("Home Advantage (Elo pts)", 20, 80, 45)
     elo_mov = st.checkbox("Margin-of-victory adjustment", value=True)
 
 # =============================================================================
@@ -297,7 +300,25 @@ def get_h2h(home, away):
 # ENSEMBLE: Combine all signals into final prediction
 # =============================================================================
 
-def ensemble_predict(home, away, ref_boost=0):
+def calibrate(p):
+    """Piecewise calibration from 1,191-match analysis. Model is systematically
+    under-confident in the 50-75% range."""
+    if p < 0.50:
+        return p
+    elif p < 0.55:
+        return p + 0.044
+    elif p < 0.60:
+        return p + 0.076
+    elif p < 0.65:
+        return p + 0.090
+    elif p < 0.70:
+        return p + 0.088
+    elif p < 0.75:
+        return p + 0.070
+    else:
+        return p + 0.040
+
+def ensemble_predict(home, away, ref_boost=0, mkt_home=None, mkt_away=None):
     h_elo = ELO_RATINGS.get(home, 1500)
     a_elo = ELO_RATINGS.get(away, 1500)
     elo_prob = 1 / (1 + 10 ** ((a_elo - h_elo - elo_home_pts) / 400))
@@ -321,15 +342,26 @@ def ensemble_predict(home, away, ref_boost=0):
 
     ref_prob = 0.5 + ref_boost / 200
 
-    raw = (elo_w * elo_prob + stats_w * stats_prob + form_w * combined_form
+    model_raw = (elo_w * elo_prob + stats_w * stats_prob + form_w * combined_form
            + home_w * 0.57 + context_w * ref_prob) / wt
-    prob = max(0.18, min(0.85, raw))
+
+    if mkt_home and mkt_away and market_w > 0:
+        margin = 1/mkt_home + 1/mkt_away
+        mkt_prob = (1/mkt_home) / margin
+        prob = (1 - market_w) * model_raw + market_w * mkt_prob
+    else:
+        prob = model_raw
+
+    prob = calibrate(prob)
+    prob = max(0.20, min(0.85, prob))
 
     return {
         "prob": prob, "elo_prob": elo_prob, "stats_prob": stats_prob,
         "form_prob": form_prob, "pyth_prob": pyth_prob, "combined_form": combined_form,
         "h_elo": h_elo, "a_elo": a_elo, "atk_edge": atk_edge, "def_edge": def_edge,
         "form_margin_h": h_form, "form_margin_a": a_form,
+        "model_raw": model_raw,
+        "mkt_prob": (1/mkt_home) / (1/mkt_home + 1/mkt_away) if mkt_home and mkt_away else None,
     }
 
 # =============================================================================
@@ -409,7 +441,8 @@ def full_backtest(results, ew, sw, fw, hw, cw, k=32, h_adv=50, use_mov=True):
         if total_w <= 0:
             total_w = 1.0
         raw = (ew * elo_p + sw * stats_p + fw * comb_form + hw * 0.57 + cw * 0.5) / total_w
-        ensemble_p = max(0.18, min(0.85, raw))
+        ensemble_p = calibrate(raw)
+        ensemble_p = max(0.20, min(0.85, ensemble_p))
 
         pred_home = ensemble_p >= 0.5
         preds.append({
@@ -451,13 +484,20 @@ BT_STATS = sum(1 for p in BT_PREDS if p["stats_correct"])
 BT_FORM = sum(1 for p in BT_PREDS if p["form_correct"])
 BT_BRIER = sum((p["ensemble_p"] - (1.0 if p["home_won"] else 0.0)) ** 2 for p in BT_PREDS) / BT_N
 
+BT_POST = [p for p in BT_PREDS if p["rd"] >= 4]
+BT_POST_N = len(BT_POST)
+BT_POST_ENS = sum(1 for p in BT_POST if p["ensemble_correct"])
+BT_POST_ELO = sum(1 for p in BT_POST if p["elo_correct"])
+BT_POST_STATS = sum(1 for p in BT_POST if p["stats_correct"])
+BT_POST_FORM = sum(1 for p in BT_POST if p["form_correct"])
+
 # =============================================================================
 # ROUND 15 PREDICTIONS
 # =============================================================================
 
 results_list = []
 for m in MATCHES:
-    ep = ensemble_predict(m["Home"], m["Away"], m["Ref_Boost"])
+    ep = ensemble_predict(m["Home"], m["Away"], m["Ref_Boost"], m["Mkt_Home"], m["Mkt_Away"])
     tp = predict_total(m["Home"], m["Away"])
     prob = ep["prob"]
     edge = (prob - 1 / m["Mkt_Home"]) * 100
@@ -506,6 +546,8 @@ for m in MATCHES:
         "H2H_Count": tp["h2h_count"],
         "H_Outs": m["H_Outs"], "A_Outs": m["A_Outs"],
         "H_Form": round(ep["form_margin_h"], 1), "A_Form": round(ep["form_margin_a"], 1),
+        "Mkt_Impl": round(ep.get("mkt_prob", 0) or 0, 3),
+        "Model_Raw": round(ep.get("model_raw", prob), 4),
     })
 
 df = pd.DataFrame(results_list)
@@ -525,8 +567,8 @@ with tab_dash:
     c1.metric("Games", f"{len(df)} (Origin)")
     c2.metric("Strong/Confident", len(actionable))
     c3.metric("Value Flags", int(df["Has_Value"].sum()))
-    c4.metric("Ensemble Acc", f"{BT_ENS/BT_N:.0%}")
-    c5.metric("Elo Acc", f"{BT_ELO/BT_N:.0%}")
+    c4.metric("Ensemble R4+", f"{BT_POST_ENS/BT_POST_N:.0%}", help=f"{BT_POST_ENS}/{BT_POST_N} (excl. R1-3 burn-in)")
+    c5.metric("All Rounds", f"{BT_ENS/BT_N:.0%}", help=f"{BT_ENS}/{BT_N} incl. burn-in")
 
     st.markdown("---")
     st.subheader("Round 15 Predictions")
@@ -775,15 +817,24 @@ with tab_power:
 # ========================= BACKTESTING ========================================
 with tab_bt:
     st.subheader("Multi-Signal Backtest: Rounds 1-14")
-    st.markdown(f"Forward-looking validation on **{BT_N} matches**. Elo and Form are fully forward-looking (no leakage). "
-                "Stats uses full-season NRL.com data (leakage caveat noted).")
+    st.markdown(f"Forward-looking validation on **{BT_N} matches** (calibrated). "
+                f"Post burn-in (R4+): **{BT_POST_N} matches**. "
+                "Elo and Form are fully forward-looking. Stats uses full-season NRL.com data (leakage caveat).")
 
+    st.markdown("##### Post Burn-in (R4+) -- excludes early rounds where Elo has no differentiation")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Ensemble", f"{BT_ENS/BT_N:.1%}", help=f"{BT_ENS}/{BT_N}")
-    c2.metric("Elo Only", f"{BT_ELO/BT_N:.1%}", help=f"{BT_ELO}/{BT_N}")
-    c3.metric("Stats Only", f"{BT_STATS/BT_N:.1%}", help=f"{BT_STATS}/{BT_N} (leakage caveat)")
-    c4.metric("Form Only", f"{BT_FORM/BT_N:.1%}", help=f"{BT_FORM}/{BT_N}")
+    c1.metric("Ensemble R4+", f"{BT_POST_ENS/BT_POST_N:.1%}", help=f"{BT_POST_ENS}/{BT_POST_N}")
+    c2.metric("Elo R4+", f"{BT_POST_ELO/BT_POST_N:.1%}", help=f"{BT_POST_ELO}/{BT_POST_N}")
+    c3.metric("Stats R4+", f"{BT_POST_STATS/BT_POST_N:.1%}", help=f"{BT_POST_STATS}/{BT_POST_N}")
+    c4.metric("Form R4+", f"{BT_POST_FORM/BT_POST_N:.1%}", help=f"{BT_POST_FORM}/{BT_POST_N}")
     c5.metric("Brier Score", f"{BT_BRIER:.3f}")
+
+    st.markdown("##### All Rounds (incl. burn-in)")
+    c1b, c2b, c3b, c4b = st.columns(4)
+    c1b.metric("Ensemble", f"{BT_ENS/BT_N:.1%}", help=f"{BT_ENS}/{BT_N}")
+    c2b.metric("Elo", f"{BT_ELO/BT_N:.1%}")
+    c3b.metric("Stats", f"{BT_STATS/BT_N:.1%}")
+    c4b.metric("Form", f"{BT_FORM/BT_N:.1%}")
 
     st.markdown("#### Accuracy by Round")
     rd_data = {}
