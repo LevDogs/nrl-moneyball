@@ -567,31 +567,36 @@ with tab_dash:
             card, tag = "pass-card", '<span class="tag tag-skip">SKIP</span>'
 
         vtag = ' <span class="tag tag-value">VALUE</span>' if r["Has_Value"] else ""
-        etag = f' <span class="tag tag-elo">ELO {int(r["H_Elo"])}-{int(r["A_Elo"])}</span>'
+        etag = ' <span class="tag tag-elo">ELO ' + str(int(r["H_Elo"])) + "-" + str(int(r["A_Elo"])) + "</span>"
         prob = r["WinnerProb"]
         fair = r["Fair_H"] if r["Prob"] >= 0.5 else r["Fair_A"]
         mkt = r["Mkt_H"] if r["Prob"] >= 0.5 else r["Mkt_A"]
+        edge_color = "#4ade80" if r["Edge"] >= 3 else "#9ca3af"
+        kelly_html = '<span>Kelly: <b style="color:#fbbf24">' + f'{r["Kelly"]:.1f}%' + "</b></span>" if r["Kelly"] > 0 else ""
 
-        st.markdown(f"""<div class="{card}">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
-                <div>{tag}{vtag}{etag} <b style="font-size:1.1rem; color:#e5e7eb">{r['Bet']}</b>
-                    <span style="color:#6b7280; margin-left:8px">{r['Match']}</span></div>
-                <div style="font-size:1.1rem; font-weight:700; color:#60a5fa">{prob:.0%}</div>
-            </div>
-            <div style="display:flex; gap:16px; color:#9ca3af; font-size:0.85rem; flex-wrap:wrap">
-                <span>Fair: <b style="color:#60a5fa">${fair:.2f}</b></span>
-                <span>Market: <b style="color:#e5e7eb">${mkt:.2f}</b></span>
-                <span>Edge: <b style="color:{'#4ade80' if r['Edge'] >= 3 else '#9ca3af'}">{r['Edge']:+.1f}pp</b></span>
-                {'<span>Kelly: <b style="color:#fbbf24">' + f"{r['Kelly']:.1f}%" + '</b></span>' if r['Kelly'] > 0 else ''}
-                <span>Ref: <b style="color:#c084fc">{r['Ref_Boost']:+.1f}pp</b></span>
-                <span>Total: <b style="color:#f97316">{r['Exp_Total']:.0f}pts</b></span>
-            </div>
-            <div style="display:flex; gap:16px; color:#6b7280; font-size:0.78rem; margin-top:4px">
-                <span>Elo:{r['Elo']:.0%}</span> <span>Stats:{r['Stats']:.0%}</span>
-                <span>Form:{r['Form']:.0%}</span> <span>Pyth:{r['Pyth']:.0%}</span>
-            </div>
-            <div style="color:#6b7280; font-size:0.78rem; margin-top:4px">Outs: {r['H_Outs']} | {r['A_Outs']}</div>
-        </div>""", unsafe_allow_html=True)
+        html = (
+            '<div class="' + card + '">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+            '<div>' + tag + vtag + etag
+            + ' <b style="font-size:1.1rem;color:#e5e7eb">' + str(r["Bet"]) + "</b>"
+            + ' <span style="color:#6b7280;margin-left:8px">' + str(r["Match"]) + "</span></div>"
+            + '<div style="font-size:1.1rem;font-weight:700;color:#60a5fa">' + f"{prob:.0%}" + "</div></div>"
+            + '<div style="display:flex;gap:16px;color:#9ca3af;font-size:0.85rem;flex-wrap:wrap">'
+            + '<span>Fair: <b style="color:#60a5fa">$' + f"{fair:.2f}" + "</b></span>"
+            + '<span>Market: <b style="color:#e5e7eb">$' + f"{mkt:.2f}" + "</b></span>"
+            + '<span>Edge: <b style="color:' + edge_color + '">' + f"{r['Edge']:+.1f}pp" + "</b></span>"
+            + kelly_html
+            + '<span>Ref: <b style="color:#c084fc">' + f"{r['Ref_Boost']:+.1f}pp" + "</b></span>"
+            + '<span>Total: <b style="color:#f97316">' + f"{r['Exp_Total']:.0f}pts" + "</b></span></div>"
+            + '<div style="display:flex;gap:16px;color:#6b7280;font-size:0.78rem;margin-top:4px">'
+            + "<span>Elo:" + f"{r['Elo']:.0%}" + "</span>"
+            + " <span>Stats:" + f"{r['Stats']:.0%}" + "</span>"
+            + " <span>Form:" + f"{r['Form']:.0%}" + "</span>"
+            + " <span>Pyth:" + f"{r['Pyth']:.0%}" + "</span></div>"
+            + '<div style="color:#6b7280;font-size:0.78rem;margin-top:4px">Outs: '
+            + str(r["H_Outs"]) + " | " + str(r["A_Outs"]) + "</div></div>"
+        )
+        st.markdown(html, unsafe_allow_html=True)
 
     st.markdown("---")
     col1, col2 = st.columns(2)
