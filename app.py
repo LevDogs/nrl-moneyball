@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from math import exp
+from math import exp, log
 from io import BytesIO
 
 st.set_page_config(page_title="NRL Moneyball", page_icon="\U0001f3c8", layout="wide")
@@ -24,25 +24,29 @@ st.markdown("""<style>
     .tag-lean {background:#1e3a5f; color:#93c5fd}
     .tag-skip {background:#1e2a38; color:#6b7280}
     .tag-value {background:#065f46; color:#6ee7b7; margin-left:4px}
-    .stat-bar {height:6px; border-radius:3px; margin-top:2px}
+    .tag-elo {background:#7c3aed; color:#c4b5fd; margin-left:4px}
 </style>""", unsafe_allow_html=True)
 
-st.markdown("# \U0001f3c8 NRL Moneyball")
-st.markdown("**Round 15, 2026 -- Origin II Split Round -- Team Stats from nrl.com**")
+st.markdown("# \U0001f3c8 NRL Moneyball v3")
+st.markdown("**Round 15, 2026 -- Origin II Split Round -- Multi-Signal Ensemble**")
 
 # -- Sidebar --
-st.sidebar.header("Model Weights")
-attack_w = st.sidebar.slider("Attack Weight", 0.25, 0.60, 0.30)
-defence_w = st.sidebar.slider("Defence Weight", 0.10, 0.40, 0.25)
-form_w = st.sidebar.slider("Form Weight", 0.05, 0.30, 0.30)
-home_w = st.sidebar.slider("Home Advantage", 0.05, 0.20, 0.08)
-context_w = st.sidebar.slider("Context (Ref + Origin)", 0.02, 0.20, 0.07)
-wt = attack_w + defence_w + form_w + home_w + context_w
+st.sidebar.header("Ensemble Weights")
+elo_w = st.sidebar.slider("Elo Rating", 0.15, 0.60, 0.35)
+stats_w = st.sidebar.slider("Team Stats (NRL.com)", 0.05, 0.40, 0.20)
+form_w = st.sidebar.slider("Form + Pythagorean", 0.05, 0.30, 0.25)
+home_w = st.sidebar.slider("Home Advantage", 0.02, 0.15, 0.10)
+context_w = st.sidebar.slider("Referee Context", 0.02, 0.15, 0.10)
+wt = elo_w + stats_w + form_w + home_w + context_w
 st.sidebar.caption(f"Sum: {wt:.2f}" + (" ok" if abs(wt - 1.0) <= 0.03 else " -- adjust to ~1.00"))
 
+with st.sidebar.expander("Elo Settings"):
+    elo_k = st.slider("K-Factor", 16, 64, 32, help="Higher = more reactive to recent results")
+    elo_home_pts = st.slider("Home Advantage (Elo pts)", 20, 80, 50)
+    elo_mov = st.checkbox("Margin-of-victory adjustment", value=True)
+
 # =============================================================================
-# TEAM STATS -- per-game averages from nrl.com/stats/teams (all 17 teams)
-# Scraped 11 June 2026 via same-origin fetch from NRL.com q-data
+# DATA
 # =============================================================================
 
 TEAM_STATS = {
@@ -141,304 +145,412 @@ MATCHES = [
 ]
 
 # =============================================================================
-# RECENT FORM: Last 5 games scoring from actual results
-# Weight recent performance more heavily than season averages
+# MODEL COMPONENT 1: ELO SYSTEM
+# Dynamic power ratings updated game-by-game with margin-of-victory
 # =============================================================================
 
-def compute_recent_form(results, n=5):
-    team_games = {}
+ALL_TEAMS = list(TEAM_STATS.keys())
+
+def build_elo(results, k=32, home_adv=50, use_mov=True):
+    elo = {t: 1500.0 for t in ALL_TEAMS}
+    predictions = []
+    history = {t: [(0, 1500.0)] for t in ALL_TEAMS}
+
+    for rd, home, away, hs, as_ in sorted(results, key=lambda x: (x[0], x[1])):
+        h_elo, a_elo = elo.get(home, 1500), elo.get(away, 1500)
+        expected_h = 1 / (1 + 10 ** ((a_elo - h_elo - home_adv) / 400))
+
+        home_won = hs > as_
+        s_h = 1.0 if home_won else (0.5 if hs == as_ else 0.0)
+
+        mov_mult = 1.0
+        if use_mov:
+            margin = abs(hs - as_)
+            mov_mult = max(1.0, log(margin + 1) * 0.7)
+
+        predictions.append({
+            "round": rd, "home": home, "away": away,
+            "elo_prob": round(expected_h, 4),
+            "predicted": home if expected_h >= 0.5 else away,
+            "actual": home if home_won else away,
+            "correct": (expected_h >= 0.5) == home_won,
+            "h_elo": round(h_elo, 1), "a_elo": round(a_elo, 1),
+            "hs": hs, "as_": as_,
+        })
+
+        delta = k * mov_mult * (s_h - expected_h)
+        elo[home] = elo.get(home, 1500) + delta
+        elo[away] = elo.get(away, 1500) - delta
+        history.setdefault(home, []).append((rd, elo[home]))
+        history.setdefault(away, []).append((rd, elo[away]))
+
+    return elo, predictions, history
+
+ELO_RATINGS, ELO_PREDS, ELO_HISTORY = build_elo(RESULTS_2026, elo_k, elo_home_pts, elo_mov)
+
+# =============================================================================
+# MODEL COMPONENT 2: SCORING ANALYTICS + PYTHAGOREAN
+# =============================================================================
+
+def build_scoring(results):
+    teams = {}
     for rd, home, away, hs, as_ in results:
-        for team, scored, conceded in [(home, hs, as_), (away, as_, hs)]:
-            if team not in team_games:
-                team_games[team] = []
-            team_games[team].append({"rd": rd, "scored": scored, "conceded": conceded})
+        for team, scored, conceded, is_home, opp in [
+            (home, hs, as_, True, away), (away, as_, hs, False, home)
+        ]:
+            t = teams.setdefault(team, {
+                "pf": 0, "pa": 0, "g": 0,
+                "h_pf": 0, "h_pa": 0, "h_g": 0,
+                "a_pf": 0, "a_pa": 0, "a_g": 0,
+                "games": [],
+            })
+            t["pf"] += scored; t["pa"] += conceded; t["g"] += 1
+            if is_home:
+                t["h_pf"] += scored; t["h_pa"] += conceded; t["h_g"] += 1
+            else:
+                t["a_pf"] += scored; t["a_pa"] += conceded; t["a_g"] += 1
+            t["games"].append((rd, scored, conceded, is_home, opp))
 
-    recent = {}
-    for team, games in team_games.items():
-        games.sort(key=lambda g: g["rd"])
-        last_n = games[-n:]
-        season_scored = sum(g["scored"] for g in games) / len(games)
-        season_conceded = sum(g["conceded"] for g in games) / len(games)
-        recent_scored = sum(g["scored"] for g in last_n) / len(last_n)
-        recent_conceded = sum(g["conceded"] for g in last_n) / len(last_n)
+    for team, t in teams.items():
+        g = t["g"]
+        t["avg_scored"] = t["pf"] / g
+        t["avg_conceded"] = t["pa"] / g
+        t["avg_h_scored"] = t["h_pf"] / max(t["h_g"], 1)
+        t["avg_h_conceded"] = t["h_pa"] / max(t["h_g"], 1)
+        t["avg_a_scored"] = t["a_pf"] / max(t["a_g"], 1)
+        t["avg_a_conceded"] = t["a_pa"] / max(t["a_g"], 1)
+        t["point_diff"] = (t["pf"] - t["pa"]) / g
 
-        atk_trend = (recent_scored / max(season_scored, 1)) - 1.0
-        def_trend = (season_conceded / max(recent_conceded, 1)) - 1.0
+        e = 2.37
+        t["pyth"] = t["pf"]**e / (t["pf"]**e + t["pa"]**e) if t["pa"] > 0 else 0.5
 
-        recent[team] = {
-            "season_scored": round(season_scored, 1),
-            "season_conceded": round(season_conceded, 1),
-            "recent_scored": round(recent_scored, 1),
-            "recent_conceded": round(recent_conceded, 1),
-            "atk_trend": round(atk_trend, 3),
-            "def_trend": round(def_trend, 3),
-        }
-    return recent
+        sorted_g = sorted(t["games"], key=lambda x: x[0])
+        last5 = sorted_g[-5:]
+        weights = [0.5, 0.6, 0.75, 0.9, 1.0][-len(last5):]
+        t["form_margin"] = sum((s - c) * w for (_, s, c, _, _), w in zip(last5, weights)) / sum(weights)
+        t["recent_scored"] = sum(s for _, s, _, _, _ in last5) / len(last5)
+        t["recent_conceded"] = sum(c for _, _, c, _, _ in last5) / len(last5)
 
-RECENT_FORM = compute_recent_form(RESULTS_2026, n=5)
+    return teams
+
+SCORING = build_scoring(RESULTS_2026)
 
 # =============================================================================
-# Z-SCORE MODEL: Team strength from NRL.com aggregate stats + recent form
+# MODEL COMPONENT 3: TEAM STATS Z-SCORES (NRL.com data)
 # =============================================================================
 
 ATK_STATS = ["RunMetres", "TackleBreaks", "PCM", "Linebreaks", "TryAssists", "Offloads", "Points"]
-ATK_WEIGHTS = [1.0, 1.0, 1.0, 1.5, 1.2, 1.0, 1.0]
-DEF_STATS_POS = ["Tackles"]
-DEF_STATS_NEG = ["MissedTackles", "IneffTackles", "Errors"]
+ATK_W = [1.0, 1.0, 1.0, 1.5, 1.2, 1.0, 1.0]
+DEF_POS = ["Tackles"]
+DEF_NEG = ["MissedTackles", "IneffTackles", "Errors"]
 
-def zscore(val, mean, std):
+def zsc(val, mean, std):
     return (val - mean) / std if std > 0 else 0
 
-def compute_team_zscores():
+def compute_zscores():
     teams = list(TEAM_STATS.keys())
-    stat_means = {}
-    stat_stds = {}
-
-    all_stats = ATK_STATS + DEF_STATS_POS + DEF_STATS_NEG
-    for stat in all_stats:
+    means, stds = {}, {}
+    for stat in ATK_STATS + DEF_POS + DEF_NEG:
         vals = [TEAM_STATS[t][stat] for t in teams]
-        mean = sum(vals) / len(vals)
-        std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
-        stat_means[stat] = mean
-        stat_stds[stat] = std
+        m = sum(vals) / len(vals)
+        means[stat] = m
+        stds[stat] = (sum((v - m) ** 2 for v in vals) / len(vals)) ** 0.5
 
     strengths = {}
     for team in teams:
         s = TEAM_STATS[team]
+        sc = SCORING.get(team, {})
+        atk_raw = sum(zsc(s[st], means[st], stds[st]) * w for st, w in zip(ATK_STATS, ATK_W)) / sum(ATK_W)
+        d_pos = sum(zsc(s[st], means[st], stds[st]) for st in DEF_POS)
+        d_neg = sum(zsc(-s[st], -means[st], stds[st]) for st in DEF_NEG)
+        def_raw = (d_pos + d_neg) / (len(DEF_POS) + len(DEF_NEG))
 
-        atk_z_raw = sum(
-            zscore(s[stat], stat_means[stat], stat_stds[stat]) * w
-            for stat, w in zip(ATK_STATS, ATK_WEIGHTS)
-        ) / sum(ATK_WEIGHTS)
-
-        def_z_pos = sum(zscore(s[stat], stat_means[stat], stat_stds[stat]) for stat in DEF_STATS_POS)
-        def_z_neg = sum(zscore(-s[stat], -stat_means[stat], stat_stds[stat]) for stat in DEF_STATS_NEG)
-        def_z_raw = (def_z_pos + def_z_neg) / (len(DEF_STATS_POS) + len(DEF_STATS_NEG))
-
-        rf = RECENT_FORM.get(team, {"atk_trend": 0, "def_trend": 0})
-        atk_z = atk_z_raw * (1 + 0.3 * rf["atk_trend"])
-        def_z = def_z_raw * (1 + 0.3 * rf["def_trend"])
-
+        atk_trend = (sc.get("recent_scored", s["Points"]) / max(sc.get("avg_scored", s["Points"]), 1)) - 1
+        def_trend = (sc.get("avg_conceded", 24) / max(sc.get("recent_conceded", 24), 1)) - 1
         strengths[team] = {
-            "atk_z": round(atk_z, 3),
-            "def_z": round(def_z, 3),
-            "atk_z_raw": round(atk_z_raw, 3),
-            "def_z_raw": round(def_z_raw, 3),
-            "played": s["played"],
+            "atk_z": round(atk_raw * (1 + 0.3 * atk_trend), 3),
+            "def_z": round(def_raw * (1 + 0.3 * def_trend), 3),
+            "atk_raw": round(atk_raw, 3), "def_raw": round(def_raw, 3),
         }
 
-    atk_sorted = sorted(strengths.items(), key=lambda x: x[1]["atk_z"], reverse=True)
-    def_sorted = sorted(strengths.items(), key=lambda x: x[1]["def_z"], reverse=True)
-    for rank, (team, _) in enumerate(atk_sorted, 1):
-        strengths[team]["atk_rank"] = rank
-    for rank, (team, _) in enumerate(def_sorted, 1):
-        strengths[team]["def_rank"] = rank
+    for key in ["atk_z", "def_z"]:
+        for rank, (team, _) in enumerate(sorted(strengths.items(), key=lambda x: x[1][key], reverse=True), 1):
+            strengths[team][f"{key[:3]}_rank"] = rank
 
-    return strengths, stat_means, stat_stds
+    return strengths, means, stds
 
-team_strengths, stat_means, stat_stds = compute_team_zscores()
+ZSCORES, STAT_MEANS, STAT_STDS = compute_zscores()
 
+# =============================================================================
+# MODEL COMPONENT 4: H2H SEASON HISTORY
+# =============================================================================
 
-def calculate_match(m):
-    h = team_strengths[m["Home"]]
-    a = team_strengths[m["Away"]]
+def get_h2h(home, away):
+    games = []
+    for rd, h, a, hs, as_ in RESULTS_2026:
+        if (h == home and a == away) or (h == away and a == home):
+            games.append({"rd": rd, "home": h, "away": a, "hs": hs, "as_": as_,
+                         "total": hs + as_, "winner": h if hs > as_ else a})
+    return games
 
-    atk_edge = h["atk_z"] - a["def_z"]
-    def_edge = h["def_z"] - a["atk_z"]
+# =============================================================================
+# ENSEMBLE: Combine all signals into final prediction
+# =============================================================================
 
-    h_season = SEASON[m["Home"]]
-    a_season = SEASON[m["Away"]]
-    h_win_pct = h_season["W"] / h_season["P"]
-    a_win_pct = a_season["W"] / a_season["P"]
-    form_edge = h_win_pct - a_win_pct
+def ensemble_predict(home, away, ref_boost=0):
+    h_elo = ELO_RATINGS.get(home, 1500)
+    a_elo = ELO_RATINGS.get(away, 1500)
+    elo_prob = 1 / (1 + 10 ** ((a_elo - h_elo - elo_home_pts) / 400))
 
-    ref_edge = m["Ref_Boost"] / 200
+    hz, az = ZSCORES.get(home, {}), ZSCORES.get(away, {})
+    atk_edge = hz.get("atk_z", 0) - az.get("def_z", 0)
+    def_edge = hz.get("def_z", 0) - az.get("atk_z", 0)
+    stats_score = atk_edge * 0.6 + def_edge * 0.4
+    stats_prob = 1 / (1 + exp(-stats_score * 1.5))
 
-    score = (
-        attack_w * atk_edge
-        + defence_w * def_edge
-        + form_w * form_edge
-        + home_w * 0.15
-        + context_w * ref_edge
-    )
+    hs, as_ = SCORING.get(home, {}), SCORING.get(away, {})
+    h_pyth = hs.get("pyth", 0.5)
+    a_pyth = as_.get("pyth", 0.5)
+    pyth_prob = h_pyth / (h_pyth + a_pyth) if (h_pyth + a_pyth) > 0 else 0.5
 
-    prob = 1 / (1 + exp(-score * 2.0))
-    prob = max(0.25, min(0.82, prob))
-    return prob, atk_edge, def_edge, form_edge, ref_edge, score
+    h_form = hs.get("form_margin", 0)
+    a_form = as_.get("form_margin", 0)
+    form_score = (h_form - a_form) / 30
+    form_prob = 1 / (1 + exp(-form_score * 2))
+    combined_form = (form_prob * 0.6 + pyth_prob * 0.4)
 
-results = []
+    ref_prob = 0.5 + ref_boost / 200
+
+    raw = (elo_w * elo_prob + stats_w * stats_prob + form_w * combined_form
+           + home_w * 0.57 + context_w * ref_prob) / wt
+    prob = max(0.18, min(0.85, raw))
+
+    return {
+        "prob": prob, "elo_prob": elo_prob, "stats_prob": stats_prob,
+        "form_prob": form_prob, "pyth_prob": pyth_prob, "combined_form": combined_form,
+        "h_elo": h_elo, "a_elo": a_elo, "atk_edge": atk_edge, "def_edge": def_edge,
+        "form_margin_h": h_form, "form_margin_a": a_form,
+    }
+
+# =============================================================================
+# TOTAL POINTS PREDICTIONS
+# =============================================================================
+
+def predict_total(home, away, recent_wt=0.4):
+    hs = SCORING.get(home, {})
+    as_ = SCORING.get(away, {})
+    league_avg = sum(t.get("avg_scored", 24) for t in SCORING.values()) / max(len(SCORING), 1)
+
+    exp_h_season = (hs.get("avg_h_scored", league_avg) + as_.get("avg_a_conceded", league_avg)) / 2
+    exp_a_season = (as_.get("avg_a_scored", league_avg) + hs.get("avg_h_conceded", league_avg)) / 2
+    exp_h_recent = (hs.get("recent_scored", league_avg) + as_.get("recent_conceded", league_avg)) / 2
+    exp_a_recent = (as_.get("recent_scored", league_avg) + hs.get("recent_conceded", league_avg)) / 2
+
+    exp_h = (1 - recent_wt) * exp_h_season + recent_wt * exp_h_recent
+    exp_a = (1 - recent_wt) * exp_a_season + recent_wt * exp_a_recent
+
+    h2h = get_h2h(home, away)
+    if len(h2h) >= 2:
+        h2h_total = sum(g["total"] for g in h2h) / len(h2h)
+        exp_total = 0.7 * (exp_h + exp_a) + 0.3 * h2h_total
+    else:
+        exp_total = exp_h + exp_a
+
+    return {"exp_h": round(exp_h, 1), "exp_a": round(exp_a, 1),
+            "exp_total": round(exp_total, 1), "exp_margin": round(exp_h - exp_a, 1),
+            "h2h": h2h, "h2h_count": len(h2h)}
+
+# =============================================================================
+# BACKTEST: Forward-looking, per-component tracking
+# =============================================================================
+
+def full_backtest(results, ew, sw, fw, hw, cw, k=32, h_adv=50, use_mov=True):
+    elo = {t: 1500.0 for t in ALL_TEAMS}
+    records = {t: {"W": 0, "L": 0, "P": 0, "PF": 0, "PA": 0, "games": []} for t in ALL_TEAMS}
+    preds = []
+
+    for rd, home, away, hs, as_ in sorted(results, key=lambda x: (x[0], x[1])):
+        winner = home if hs > as_ else away
+        home_won = hs > as_
+
+        # --- Elo prediction (forward-looking, no leakage) ---
+        h_elo, a_elo = elo.get(home, 1500), elo.get(away, 1500)
+        elo_p = 1 / (1 + 10 ** ((a_elo - h_elo - h_adv) / 400))
+
+        # --- Stats prediction (uses full-season NRL.com data - has leakage caveat) ---
+        hz, az = ZSCORES.get(home, {}), ZSCORES.get(away, {})
+        s_edge = (hz.get("atk_z", 0) - az.get("def_z", 0)) * 0.6 + (hz.get("def_z", 0) - az.get("atk_z", 0)) * 0.4
+        stats_p = 1 / (1 + exp(-s_edge * 1.5))
+
+        # --- Form prediction (forward-looking) ---
+        hr, ar = records[home], records[away]
+        h_wpct = hr["W"] / max(hr["P"], 1) if hr["P"] > 0 else 0.5
+        a_wpct = ar["W"] / max(ar["P"], 1) if ar["P"] > 0 else 0.5
+
+        h_last5 = hr["games"][-5:]
+        a_last5 = ar["games"][-5:]
+        wts = [0.5, 0.6, 0.75, 0.9, 1.0]
+        h_fm = sum((s - c) * wts[-len(h_last5):][i] for i, (s, c) in enumerate(h_last5)) / sum(wts[-len(h_last5):]) if h_last5 else 0
+        a_fm = sum((s - c) * wts[-len(a_last5):][i] for i, (s, c) in enumerate(a_last5)) / sum(wts[-len(a_last5):]) if a_last5 else 0
+        form_sc = (h_fm - a_fm) / 30
+        form_p = 1 / (1 + exp(-form_sc * 2))
+
+        # --- Pythagorean (forward-looking) ---
+        h_pf, h_pa = hr["PF"], hr["PA"]
+        a_pf, a_pa = ar["PF"], ar["PA"]
+        e = 2.37
+        h_pyth = h_pf**e / (h_pf**e + h_pa**e) if h_pa > 0 and h_pf > 0 else 0.5
+        a_pyth = a_pf**e / (a_pf**e + a_pa**e) if a_pa > 0 and a_pf > 0 else 0.5
+        pyth_p = h_pyth / (h_pyth + a_pyth) if (h_pyth + a_pyth) > 0 else 0.5
+        comb_form = form_p * 0.6 + pyth_p * 0.4
+
+        # --- Ensemble ---
+        total_w = ew + sw + fw + hw + cw
+        if total_w <= 0:
+            total_w = 1.0
+        raw = (ew * elo_p + sw * stats_p + fw * comb_form + hw * 0.57 + cw * 0.5) / total_w
+        ensemble_p = max(0.18, min(0.85, raw))
+
+        pred_home = ensemble_p >= 0.5
+        preds.append({
+            "rd": rd, "home": home, "away": away, "winner": winner,
+            "elo_p": elo_p, "stats_p": stats_p, "form_p": form_p, "pyth_p": pyth_p, "ensemble_p": ensemble_p,
+            "elo_correct": (elo_p >= 0.5) == home_won,
+            "stats_correct": (stats_p >= 0.5) == home_won,
+            "form_correct": (form_p >= 0.5) == home_won,
+            "ensemble_correct": pred_home == home_won,
+            "home_won": home_won, "hs": hs, "as_": as_,
+        })
+
+        # --- Update Elo ---
+        s_h = 1.0 if home_won else 0.0
+        mov = max(1.0, log(abs(hs - as_) + 1) * 0.7) if use_mov else 1.0
+        delta = k * mov * (s_h - elo_p)
+        elo[home] = elo.get(home, 1500) + delta
+        elo[away] = elo.get(away, 1500) - delta
+
+        # --- Update records ---
+        loser = away if home_won else home
+        records[winner]["W"] += 1
+        records[loser]["L"] += 1
+        for t in [home, away]:
+            records[t]["P"] += 1
+            scored = hs if t == home else as_
+            conceded = as_ if t == home else hs
+            records[t]["PF"] += scored
+            records[t]["PA"] += conceded
+            records[t]["games"].append((scored, conceded))
+
+    return preds
+
+BT_PREDS = full_backtest(RESULTS_2026, elo_w, stats_w, form_w, home_w, context_w, elo_k, elo_home_pts, elo_mov)
+BT_N = len(BT_PREDS)
+BT_ENS = sum(1 for p in BT_PREDS if p["ensemble_correct"])
+BT_ELO = sum(1 for p in BT_PREDS if p["elo_correct"])
+BT_STATS = sum(1 for p in BT_PREDS if p["stats_correct"])
+BT_FORM = sum(1 for p in BT_PREDS if p["form_correct"])
+BT_BRIER = sum((p["ensemble_p"] - (1.0 if p["home_won"] else 0.0)) ** 2 for p in BT_PREDS) / BT_N
+
+# =============================================================================
+# ROUND 15 PREDICTIONS
+# =============================================================================
+
+results_list = []
 for m in MATCHES:
-    prob, atk, dfe, frm, ref, score = calculate_match(m)
-    h = team_strengths[m["Home"]]
-    a = team_strengths[m["Away"]]
-    edge = (prob - (1 / m["Mkt_Home"])) * 100
-    away_edge = ((1 - prob) - (1 / m["Mkt_Away"])) * 100
-    fair_h = round(1 / prob, 2) if prob > 0 else 99.0
-    fair_a = round(1 / (1 - prob), 2) if prob < 1 else 99.0
-
-    winner_prob = max(prob, 1 - prob)
+    ep = ensemble_predict(m["Home"], m["Away"], m["Ref_Boost"])
+    tp = predict_total(m["Home"], m["Away"])
+    prob = ep["prob"]
+    edge = (prob - 1 / m["Mkt_Home"]) * 100
+    away_edge = ((1 - prob) - 1 / m["Mkt_Away"]) * 100
     pick_home = prob >= 0.5
     pick = m["Home"] if pick_home else m["Away"]
     best_edge = edge if pick_home else away_edge
-    has_value = best_edge >= 3
+    winner_prob = prob if pick_home else 1 - prob
+
+    kelly = 0
+    if best_edge > 0:
+        odds = m["Mkt_Home"] if pick_home else m["Mkt_Away"]
+        b = odds - 1
+        p = winner_prob
+        kelly = max(0, (b * p - (1 - p)) / b)
 
     if winner_prob >= 0.65:
-        bet, strength = f"{pick} H2H", "STRONG"
+        strength = "STRONG"
     elif winner_prob >= 0.58:
-        bet, strength = f"{pick} H2H", "CONFIDENT"
+        strength = "CONFIDENT"
     elif winner_prob >= 0.53:
-        bet, strength = f"{pick} H2H", "LEAN"
+        strength = "LEAN"
     else:
-        bet, strength = "Pass", "SKIP"
+        strength = "SKIP"
 
-    results.append({
+    hz, az = ZSCORES.get(m["Home"], {}), ZSCORES.get(m["Away"], {})
+    results_list.append({
         "Match": f"{m['Home']} vs {m['Away']}",
         "Home": m["Home"], "Away": m["Away"],
         "Venue": m["Venue"], "Kickoff": m["Kickoff"], "Referee": m["Referee"],
-        "Home_Prob": round(prob, 4), "Away_Prob": round(1 - prob, 4),
-        "Fair_H": fair_h, "Fair_A": fair_a,
+        "Prob": round(prob, 4), "Away_Prob": round(1 - prob, 4),
+        "Elo": round(ep["elo_prob"], 3), "Stats": round(ep["stats_prob"], 3),
+        "Form": round(ep["form_prob"], 3), "Pyth": round(ep["pyth_prob"], 3),
+        "Fair_H": round(1 / prob, 2), "Fair_A": round(1 / (1 - prob), 2),
         "Mkt_H": m["Mkt_Home"], "Mkt_A": m["Mkt_Away"],
-        "Edge_pp": round(edge, 1), "Away_Edge_pp": round(away_edge, 1),
-        "Best_Edge": round(best_edge, 1), "Has_Value": has_value,
+        "Edge": round(best_edge, 1), "Has_Value": best_edge >= 3,
+        "Kelly": round(kelly * 100, 1),
         "Ref_Boost": m["Ref_Boost"],
-        "Atk_Edge": round(atk, 3), "Def_Edge": round(dfe, 3),
-        "Form_Edge": round(frm, 3), "Ref_Edge": round(ref, 3),
-        "Score": round(score, 4),
-        "Bet": bet, "Strength": strength,
-        "H_Atk_z": h["atk_z"], "H_Def_z": h["def_z"],
-        "A_Atk_z": a["atk_z"], "A_Def_z": a["def_z"],
-        "H_Atk_rank": h["atk_rank"], "H_Def_rank": h["def_rank"],
-        "A_Atk_rank": a["atk_rank"], "A_Def_rank": a["def_rank"],
+        "H_Elo": round(ep["h_elo"], 0), "A_Elo": round(ep["a_elo"], 0),
+        "Atk_Edge": round(ep["atk_edge"], 3), "Def_Edge": round(ep["def_edge"], 3),
+        "H_Atk_rank": hz.get("atk_rank", 0), "H_Def_rank": hz.get("def_rank", 0),
+        "A_Atk_rank": az.get("atk_rank", 0), "A_Def_rank": az.get("def_rank", 0),
+        "Bet": f"{pick} H2H" if strength != "SKIP" else "Pass",
+        "Strength": strength, "Pick": pick, "WinnerProb": round(winner_prob, 4),
+        "Exp_H": tp["exp_h"], "Exp_A": tp["exp_a"], "Exp_Total": tp["exp_total"],
+        "H2H_Count": tp["h2h_count"],
         "H_Outs": m["H_Outs"], "A_Outs": m["A_Outs"],
+        "H_Form": round(ep["form_margin_h"], 1), "A_Form": round(ep["form_margin_a"], 1),
     })
 
-df = pd.DataFrame(results)
+df = pd.DataFrame(results_list)
 
 # =============================================================================
-# BACKTESTING: Self-tuning from Rounds 1-14 actual results
+# TABS
 # =============================================================================
 
-def backtest_model(aw, dw, fw, hw, cw, scale, home_const):
-    records = {t: {"W": 0, "L": 0, "P": 0} for t in SEASON}
-    correct = 0
-    total = 0
-    brier_sum = 0
-    round_results = {}
-
-    for rd, home, away, hs, as_, *_ in RESULTS_2026:
-        winner = home if hs > as_ else away
-
-        if home not in team_strengths or away not in team_strengths:
-            records[winner]["W"] += 1
-            records[home if winner != home else away]["L"] += 1
-            for t in [home, away]:
-                records[t]["P"] += 1
-            continue
-
-        h = team_strengths[home]
-        a = team_strengths[away]
-        atk_e = h["atk_z"] - a["def_z"]
-        def_e = h["def_z"] - a["atk_z"]
-
-        h_pct = records[home]["W"] / max(records[home]["P"], 1)
-        a_pct = records[away]["W"] / max(records[away]["P"], 1)
-        if records[home]["P"] == 0:
-            h_pct = 0.5
-        if records[away]["P"] == 0:
-            a_pct = 0.5
-        form_e = h_pct - a_pct
-
-        sc = (aw * atk_e + dw * def_e + fw * form_e + hw * home_const)
-        prob = 1 / (1 + exp(-sc * scale))
-        prob = max(0.25, min(0.82, prob))
-
-        predicted = home if prob >= 0.5 else away
-
-        if predicted == winner:
-            correct += 1
-        total += 1
-        actual = 1.0 if home == winner else 0.0
-        brier_sum += (prob - actual) ** 2
-
-        if rd not in round_results:
-            round_results[rd] = {"correct": 0, "total": 0}
-        round_results[rd]["total"] += 1
-        if predicted == winner:
-            round_results[rd]["correct"] += 1
-
-        records[winner]["W"] += 1
-        records[home if winner != home else away]["L"] += 1
-        for t in [home, away]:
-            records[t]["P"] += 1
-
-    accuracy = correct / max(total, 1)
-    brier = brier_sum / max(total, 1)
-    return accuracy, brier, correct, total, round_results
-
-def optimize_weights():
-    best_acc = 0
-    best_params = None
-    best_brier = 1.0
-
-    for aw in [0.25, 0.30, 0.35, 0.40, 0.45, 0.50]:
-        for dw in [0.15, 0.20, 0.25, 0.30, 0.35]:
-            for fw in [0.10, 0.15, 0.20, 0.25, 0.30]:
-                for hw in [0.05, 0.08, 0.10, 0.12, 0.15]:
-                    for scale in [1.2, 1.5, 1.8, 2.0, 2.4, 2.8]:
-                        for hc in [0.10, 0.15, 0.20, 0.30]:
-                            acc, brier, c, t, rr = backtest_model(aw, dw, fw, hw, 0.0, scale, hc)
-                            if acc > best_acc or (acc == best_acc and brier < best_brier):
-                                best_acc = acc
-                                best_brier = brier
-                                best_params = {"attack_w": aw, "defence_w": dw, "form_w": fw,
-                                               "home_w": hw, "scale": scale, "home_const": hc,
-                                               "correct": c, "total": t, "rounds": rr}
-    return best_acc, best_brier, best_params
-
-bt_accuracy, bt_brier, bt_correct, bt_total, bt_rounds = backtest_model(
-    attack_w, defence_w, form_w, home_w, context_w, 2.0, 0.15
+tab_dash, tab_deep, tab_totals, tab_power, tab_bt, tab_stats, tab_method = st.tabs(
+    ["Dashboard", "Game Analysis", "Total Points", "Power Rankings", "Backtesting", "Team Stats", "Methodology"]
 )
 
-# =========================  TABS  =============================================
-tab_dash, tab_stats, tab_detail, tab_power, tab_backtest, tab_method = st.tabs(
-    ["Dashboard", "Team Stats", "Game Breakdowns", "Power Rankings", "Backtesting", "Methodology"]
-)
-
-# =========================  DASHBOARD  ========================================
+# ========================= DASHBOARD ==========================================
 with tab_dash:
     actionable = df[df["Strength"].isin(["STRONG", "CONFIDENT"])]
-    value_count = df[df["Has_Value"]].shape[0]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Round 15 Games", f"{len(df)} (Origin split)")
-    c2.metric("Strong/Confident Picks", len(actionable))
-    c3.metric("Market Value Flags", value_count)
-    c4.metric("Backtest Accuracy", f"{bt_accuracy:.0%}")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Games", f"{len(df)} (Origin)")
+    c2.metric("Strong/Confident", len(actionable))
+    c3.metric("Value Flags", int(df["Has_Value"].sum()))
+    c4.metric("Ensemble Acc", f"{BT_ENS/BT_N:.0%}")
+    c5.metric("Elo Acc", f"{BT_ELO/BT_N:.0%}")
+
     st.markdown("---")
-
     st.subheader("Round 15 Predictions")
-    show = df[["Match","Home_Prob","Away_Prob","Fair_H","Fair_A","Mkt_H","Mkt_A","Best_Edge","Has_Value","Ref_Boost","Bet","Strength"]].copy()
-    show["Value"] = show["Has_Value"].map({True: "YES", False: ""})
-    show = show.drop(columns=["Has_Value"])
-    show.columns = ["Match","Home%","Away%","Fair H","Fair A","Mkt H","Mkt A","Edge","Ref","Bet","Signal","Value"]
 
-    def style_signal(val):
-        if val == "STRONG": return "background-color:#b45309; color:#fff; font-weight:700"
-        if val == "CONFIDENT": return "background-color:#0d3320; color:#4ade80; font-weight:700"
-        if val == "LEAN": return "background-color:#1e2a38; color:#93c5fd; font-weight:600"
+    show = df[["Match","Prob","Away_Prob","Elo","Stats","Form","Pyth","Fair_H","Fair_A","Mkt_H","Mkt_A","Edge","Kelly","Bet","Strength"]].copy()
+    show["Value"] = df["Has_Value"].map({True: "YES", False: ""})
+    show.columns = ["Match","Home%","Away%","Elo","Stats","Form","Pyth","Fair H","Fair A","Mkt H","Mkt A","Edge","Kelly%","Bet","Signal","Value"]
+
+    def style_sig(v):
+        if v == "STRONG": return "background-color:#b45309; color:#fff; font-weight:700"
+        if v == "CONFIDENT": return "background-color:#0d3320; color:#4ade80; font-weight:700"
+        if v == "LEAN": return "background-color:#1e2a38; color:#93c5fd"
         return "color:#6b7280"
-
-    def style_value(val):
-        if val == "YES": return "background-color:#0d3320; color:#4ade80; font-weight:700"
-        return ""
 
     st.dataframe(
         show.style.format({
-            "Home%": "{:.1%}", "Away%": "{:.1%}",
-            "Fair H": "${:.2f}", "Fair A": "${:.2f}",
-            "Mkt H": "${:.2f}", "Mkt A": "${:.2f}",
-            "Edge": "{:+.1f}", "Ref": "{:+.1f}",
-        }).map(style_signal, subset=["Signal"]).map(style_value, subset=["Value"]),
-        use_container_width=True, hide_index=True, height=250,
+            "Home%": "{:.1%}", "Away%": "{:.1%}", "Elo": "{:.0%}", "Stats": "{:.0%}",
+            "Form": "{:.0%}", "Pyth": "{:.0%}",
+            "Fair H": "${:.2f}", "Fair A": "${:.2f}", "Mkt H": "${:.2f}", "Mkt A": "${:.2f}",
+            "Edge": "{:+.1f}", "Kelly%": "{:.1f}",
+        }).map(style_sig, subset=["Signal"]).map(
+            lambda v: "background-color:#0d3320; color:#4ade80; font-weight:700" if v == "YES" else "", subset=["Value"]
+        ),
+        use_container_width=True, hide_index=True, height=260,
     )
     st.markdown("---")
 
@@ -446,350 +558,421 @@ with tab_dash:
     for _, r in df.iterrows():
         sig = r["Strength"]
         if sig == "STRONG":
-            card_class = "bet-card-strong"
-            tag = '<span class="tag tag-strong">STRONG</span>'
+            card, tag = "bet-card-strong", '<span class="tag tag-strong">STRONG</span>'
         elif sig == "CONFIDENT":
-            card_class = "bet-card"
-            tag = '<span class="tag tag-confident">CONFIDENT</span>'
+            card, tag = "bet-card", '<span class="tag tag-confident">CONFIDENT</span>'
         elif sig == "LEAN":
-            card_class = "bet-card"
-            tag = '<span class="tag tag-lean">LEAN</span>'
+            card, tag = "bet-card", '<span class="tag tag-lean">LEAN</span>'
         else:
-            card_class = "pass-card"
-            tag = '<span class="tag tag-skip">SKIP</span>'
+            card, tag = "pass-card", '<span class="tag tag-skip">SKIP</span>'
 
-        value_tag = ' <span class="tag tag-value">VALUE</span>' if r["Has_Value"] else ""
+        vtag = ' <span class="tag tag-value">VALUE</span>' if r["Has_Value"] else ""
+        etag = f' <span class="tag tag-elo">ELO {int(r["H_Elo"])}-{int(r["A_Elo"])}</span>'
+        prob = r["WinnerProb"]
+        fair = r["Fair_H"] if r["Prob"] >= 0.5 else r["Fair_A"]
+        mkt = r["Mkt_H"] if r["Prob"] >= 0.5 else r["Mkt_A"]
 
-        pick = r["Home"] if r["Home_Prob"] >= 0.5 else r["Away"]
-        prob = r["Home_Prob"] if r["Home_Prob"] >= 0.5 else r["Away_Prob"]
-        fair = r["Fair_H"] if r["Home_Prob"] >= 0.5 else r["Fair_A"]
-        mkt = r["Mkt_H"] if r["Home_Prob"] >= 0.5 else r["Mkt_A"]
-
-        st.markdown(f"""<div class="{card_class}">
+        st.markdown(f"""<div class="{card}">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
-                <div>{tag}{value_tag} <b style="font-size:1.1rem; color:#e5e7eb">{r['Bet']}</b>
+                <div>{tag}{vtag}{etag} <b style="font-size:1.1rem; color:#e5e7eb">{r['Bet']}</b>
                     <span style="color:#6b7280; margin-left:8px">{r['Match']}</span></div>
                 <div style="font-size:1.1rem; font-weight:700; color:#60a5fa">{prob:.0%}</div>
             </div>
-            <div style="display:flex; gap:20px; color:#9ca3af; font-size:0.85rem; flex-wrap:wrap">
+            <div style="display:flex; gap:16px; color:#9ca3af; font-size:0.85rem; flex-wrap:wrap">
                 <span>Fair: <b style="color:#60a5fa">${fair:.2f}</b></span>
                 <span>Market: <b style="color:#e5e7eb">${mkt:.2f}</b></span>
-                <span>Edge: <b style="color:{'#4ade80' if r['Best_Edge'] >= 3 else '#9ca3af'}">{r['Best_Edge']:+.1f}pp</b></span>
+                <span>Edge: <b style="color:{'#4ade80' if r['Edge'] >= 3 else '#9ca3af'}">{r['Edge']:+.1f}pp</b></span>
+                {'<span>Kelly: <b style="color:#fbbf24">' + f"{r['Kelly']:.1f}%" + '</b></span>' if r['Kelly'] > 0 else ''}
                 <span>Ref: <b style="color:#c084fc">{r['Ref_Boost']:+.1f}pp</b></span>
-                <span>{r['Home']} Atk#{r['H_Atk_rank']} Def#{r['H_Def_rank']}</span>
-                <span>{r['Away']} Atk#{r['A_Atk_rank']} Def#{r['A_Def_rank']}</span>
+                <span>Total: <b style="color:#f97316">{r['Exp_Total']:.0f}pts</b></span>
             </div>
-            <div style="color:#6b7280; font-size:0.8rem; margin-top:6px">Outs: {r['H_Outs']} | {r['A_Outs']}</div>
+            <div style="display:flex; gap:16px; color:#6b7280; font-size:0.78rem; margin-top:4px">
+                <span>Elo:{r['Elo']:.0%}</span> <span>Stats:{r['Stats']:.0%}</span>
+                <span>Form:{r['Form']:.0%}</span> <span>Pyth:{r['Pyth']:.0%}</span>
+            </div>
+            <div style="color:#6b7280; font-size:0.78rem; margin-top:4px">Outs: {r['H_Outs']} | {r['A_Outs']}</div>
         </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        fig = px.bar(df, x="Match", y="Home_Prob", title="Home Win Probability",
-            color_discrete_sequence=["#3b82f6"], template="plotly_dark")
-        fig.update_layout(yaxis_tickformat=".0%", yaxis_range=[0,1],
-            plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", margin=dict(l=40,r=20,t=40,b=60))
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name="Ensemble", x=df["Match"], y=df["Prob"], marker_color="#3b82f6"))
+        fig.add_trace(go.Scatter(name="Elo", x=df["Match"], y=df["Elo"], mode="markers", marker=dict(color="#a855f7", size=10, symbol="diamond")))
+        fig.add_trace(go.Scatter(name="Market", x=df["Match"], y=[1/m["Mkt_Home"] for m in MATCHES], mode="markers", marker=dict(color="#f59e0b", size=10, symbol="x")))
+        fig.update_layout(title="Home Win: Ensemble vs Elo vs Market", yaxis_tickformat=".0%", yaxis_range=[0,1],
+            template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", margin=dict(l=40,r=20,t=40,b=60))
         fig.add_hline(y=0.5, line_dash="dot", line_color="#334155")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
-        colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Best_Edge"]]
-        fig2 = go.Figure(go.Bar(x=df["Match"], y=df["Best_Edge"], marker_color=colors))
-        fig2.update_layout(title="Market Value Edge (pp)", template="plotly_dark",
-            plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-            yaxis_title="Edge (pp)", margin=dict(l=40,r=20,t=40,b=60))
+        colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Edge"]]
+        fig2 = go.Figure(go.Bar(x=df["Match"], y=df["Edge"], marker_color=colors))
+        fig2.update_layout(title="Market Edge (pp)", template="plotly_dark",
+            plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", yaxis_title="Edge (pp)", margin=dict(l=40,r=20,t=40,b=60))
         fig2.add_hline(y=0, line_color="#334155")
         st.plotly_chart(fig2, use_container_width=True)
 
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    st.download_button("Export CSV", buf.getvalue(), "nrl_r15_moneyball.csv", "text/csv")
+    buf = BytesIO(); df.to_csv(buf, index=False)
+    st.download_button("Export CSV", buf.getvalue(), "nrl_r15_v3.csv", "text/csv")
 
 
-# =========================  TEAM STATS  =======================================
+# ========================= GAME ANALYSIS ======================================
+with tab_deep:
+    st.subheader("Multi-Signal Game Breakdown")
+    for _, g in df.iterrows():
+        with st.expander(f"{g['Match']}  |  {g['Bet']}  |  {g['WinnerProb']:.0%}  |  Edge {g['Edge']:+.1f}pp"):
+            st.markdown(f"**{g['Venue']}** -- {g['Kickoff']} -- Ref: {g['Referee']} ({g['Ref_Boost']:+.1f}pp)")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                s = SEASON[g["Home"]]; sc = SCORING.get(g["Home"], {})
+                st.markdown(f"### {g['Home']} (Home)")
+                st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {g['H_Elo']:.0f}")
+                st.markdown(f"**Pyth Win%:** {sc.get('pyth', 0.5):.0%} | **Pt Diff:** {sc.get('point_diff', 0):+.1f}/game")
+                st.markdown(f"**Atk:** #{g['H_Atk_rank']} | **Def:** #{g['H_Def_rank']}")
+                st.markdown(f"**Form (margin):** {g['H_Form']:+.1f} ppg | **L5 avg:** {sc.get('recent_scored', 0):.0f}-{sc.get('recent_conceded', 0):.0f}")
+                st.caption(f"Outs: {g['H_Outs']}")
+            with c2:
+                s = SEASON[g["Away"]]; sc = SCORING.get(g["Away"], {})
+                st.markdown(f"### {g['Away']} (Away)")
+                st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {g['A_Elo']:.0f}")
+                st.markdown(f"**Pyth Win%:** {sc.get('pyth', 0.5):.0%} | **Pt Diff:** {sc.get('point_diff', 0):+.1f}/game")
+                st.markdown(f"**Atk:** #{g['A_Atk_rank']} | **Def:** #{g['A_Def_rank']}")
+                st.markdown(f"**Form (margin):** {g['A_Form']:+.1f} ppg | **L5 avg:** {sc.get('recent_scored', 0):.0f}-{sc.get('recent_conceded', 0):.0f}")
+                st.caption(f"Outs: {g['A_Outs']}")
+
+            st.markdown("**Signal Decomposition:**")
+            signals = {"Elo": g["Elo"], "Stats": g["Stats"], "Form": g["Form"], "Pyth": g["Pyth"], "Ensemble": g["Prob"]}
+            mkt_impl = 1 / g["Mkt_H"]
+            fig_sig = go.Figure()
+            fig_sig.add_trace(go.Bar(x=list(signals.keys()), y=[v*100 for v in signals.values()],
+                marker_color=["#a855f7", "#3b82f6", "#22c55e", "#f97316", "#e5e7eb"]))
+            fig_sig.add_hline(y=50, line_dash="dot", line_color="#334155")
+            fig_sig.add_hline(y=mkt_impl*100, line_dash="dash", line_color="#f59e0b",
+                annotation_text=f"Market {mkt_impl:.0%}", annotation_position="top right")
+            fig_sig.update_layout(title=f"Home Win Probability by Signal ({g['Home']})", yaxis_title="%", yaxis_range=[0,100],
+                template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300)
+            st.plotly_chart(fig_sig, use_container_width=True)
+
+            h2h = get_h2h(g["Home"], g["Away"])
+            if h2h:
+                st.markdown(f"**H2H This Season ({len(h2h)} meetings):**")
+                for hg in h2h:
+                    st.markdown(f"- R{hg['rd']}: {hg['home']} {hg['hs']} - {hg['away']} {hg['as_']} (total: {hg['total']})")
+
+
+# ========================= TOTAL POINTS =======================================
+with tab_totals:
+    st.subheader("Total Points Predictions")
+    st.markdown("Expected scores based on season averages, home/away splits, recent form, and H2H history. "
+                "Compare model totals to bookmaker lines for over/under value.")
+
+    for _, g in df.iterrows():
+        with st.expander(f"{g['Match']} -- Model Total: {g['Exp_Total']:.0f} pts"):
+            c1, c2, c3 = st.columns(3)
+            c1.metric(f"{g['Home']} Expected", f"{g['Exp_H']:.1f}")
+            c2.metric(f"{g['Away']} Expected", f"{g['Exp_A']:.1f}")
+            c3.metric("Total", f"{g['Exp_Total']:.1f}")
+
+            hs = SCORING.get(g["Home"], {}); as_ = SCORING.get(g["Away"], {})
+            st.markdown("**Scoring Profile:**")
+            st.markdown(
+                f"| | {g['Home']} | {g['Away']} |\n|---|---|---|\n"
+                f"| Season avg scored | {hs.get('avg_scored',0):.1f} | {as_.get('avg_scored',0):.1f} |\n"
+                f"| Season avg conceded | {hs.get('avg_conceded',0):.1f} | {as_.get('avg_conceded',0):.1f} |\n"
+                f"| Home/Away scored | {hs.get('avg_h_scored',0):.1f} | {as_.get('avg_a_scored',0):.1f} |\n"
+                f"| Home/Away conceded | {hs.get('avg_h_conceded',0):.1f} | {as_.get('avg_a_conceded',0):.1f} |\n"
+                f"| Last 5 scored | {hs.get('recent_scored',0):.1f} | {as_.get('recent_scored',0):.1f} |\n"
+                f"| Last 5 conceded | {hs.get('recent_conceded',0):.1f} | {as_.get('recent_conceded',0):.1f} |\n"
+                f"| Point diff/game | {hs.get('point_diff',0):+.1f} | {as_.get('point_diff',0):+.1f} |"
+            )
+
+            h2h = get_h2h(g["Home"], g["Away"])
+            if h2h:
+                avg_total = sum(hg["total"] for hg in h2h) / len(h2h)
+                st.markdown(f"**H2H avg total:** {avg_total:.1f} pts ({len(h2h)} games)")
+                for hg in h2h:
+                    st.markdown(f"- R{hg['rd']}: {hg['home']} {hg['hs']} - {hg['away']} {hg['as_']} = {hg['total']} total")
+
+    st.markdown("---")
+    st.subheader("Total Points Summary")
+    tp_df = df[["Match", "Exp_H", "Exp_A", "Exp_Total", "H2H_Count"]].copy()
+    tp_df.columns = ["Match", "Home Exp", "Away Exp", "Total Exp", "H2H Games"]
+    st.dataframe(tp_df.style.format({"Home Exp": "{:.1f}", "Away Exp": "{:.1f}", "Total Exp": "{:.1f}"}),
+        use_container_width=True, hide_index=True)
+
+
+# ========================= POWER RANKINGS =====================================
+with tab_power:
+    st.subheader("Power Rankings: Elo + Team Stats")
+
+    pr = []
+    for team in ALL_TEAMS:
+        s = SEASON[team]; sc = SCORING.get(team, {}); z = ZSCORES.get(team, {})
+        pr.append({
+            "Team": team, "Elo": round(ELO_RATINGS.get(team, 1500), 0),
+            "Atk Z": z.get("atk_z", 0), "Def Z": z.get("def_z", 0),
+            "Pyth%": round(sc.get("pyth", 0.5) * 100, 1),
+            "Win%": round(s["W"] / s["P"] * 100, 1),
+            "Pt Diff": round(sc.get("point_diff", 0), 1),
+            "Form": round(sc.get("form_margin", 0), 1),
+            "L5 Scored": round(sc.get("recent_scored", 0), 1),
+            "L5 Conceded": round(sc.get("recent_conceded", 0), 1),
+        })
+
+    pr_df = pd.DataFrame(pr).sort_values("Elo", ascending=False)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        elo_sorted = pr_df.sort_values("Elo")
+        fig_elo = px.bar(elo_sorted, x="Elo", y="Team", orientation="h", title="Elo Ratings",
+            color="Elo", color_continuous_scale="Viridis", template="plotly_dark")
+        fig_elo.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", coloraxis_showscale=False,
+            yaxis_title="", xaxis_range=[1200, 1800])
+        fig_elo.add_vline(x=1500, line_dash="dot", line_color="#334155", annotation_text="Start")
+        st.plotly_chart(fig_elo, use_container_width=True)
+
+    with col2:
+        fig_sc = px.scatter(pr_df, x="Atk Z", y="Def Z", text="Team", color="Win%",
+            color_continuous_scale="RdYlGn", title="Attack vs Defence (top-right = best)", template="plotly_dark")
+        fig_sc.update_traces(textposition="top center", marker=dict(size=12))
+        fig_sc.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=450,
+            xaxis_title="Attack z", yaxis_title="Defence z")
+        fig_sc.add_hline(y=0, line_dash="dot", line_color="#334155")
+        fig_sc.add_vline(x=0, line_dash="dot", line_color="#334155")
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+    st.dataframe(pr_df.style.format({
+        "Elo": "{:.0f}", "Atk Z": "{:+.2f}", "Def Z": "{:+.2f}",
+        "Pyth%": "{:.1f}%", "Win%": "{:.0f}%", "Pt Diff": "{:+.1f}",
+        "Form": "{:+.1f}", "L5 Scored": "{:.1f}", "L5 Conceded": "{:.1f}",
+    }), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Elo History (Rounds 1-14)")
+    fig_hist = go.Figure()
+    top_teams = pr_df.head(8)["Team"].tolist()
+    colors = px.colors.qualitative.Set2
+    for i, team in enumerate(top_teams):
+        h = ELO_HISTORY.get(team, [])
+        if h:
+            rds = [p[0] for p in h]
+            vals = [p[1] for p in h]
+            fig_hist.add_trace(go.Scatter(x=rds, y=vals, name=team, mode="lines+markers",
+                line=dict(color=colors[i % len(colors)], width=2), marker=dict(size=4)))
+    fig_hist.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+        xaxis_title="Round", yaxis_title="Elo Rating", height=400, xaxis=dict(dtick=1))
+    fig_hist.add_hline(y=1500, line_dash="dot", line_color="#334155")
+    st.plotly_chart(fig_hist, use_container_width=True)
+    st.caption("Showing top 8 teams by current Elo. All teams start at 1500.")
+
+
+# ========================= BACKTESTING ========================================
+with tab_bt:
+    st.subheader("Multi-Signal Backtest: Rounds 1-14")
+    st.markdown(f"Forward-looking validation on **{BT_N} matches**. Elo and Form are fully forward-looking (no leakage). "
+                "Stats uses full-season NRL.com data (leakage caveat noted).")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Ensemble", f"{BT_ENS/BT_N:.1%}", help=f"{BT_ENS}/{BT_N}")
+    c2.metric("Elo Only", f"{BT_ELO/BT_N:.1%}", help=f"{BT_ELO}/{BT_N}")
+    c3.metric("Stats Only", f"{BT_STATS/BT_N:.1%}", help=f"{BT_STATS}/{BT_N} (leakage caveat)")
+    c4.metric("Form Only", f"{BT_FORM/BT_N:.1%}", help=f"{BT_FORM}/{BT_N}")
+    c5.metric("Brier Score", f"{BT_BRIER:.3f}")
+
+    st.markdown("#### Accuracy by Round")
+    rd_data = {}
+    for p in BT_PREDS:
+        rd = p["rd"]
+        if rd not in rd_data:
+            rd_data[rd] = {"elo": 0, "stats": 0, "form": 0, "ens": 0, "n": 0}
+        rd_data[rd]["n"] += 1
+        rd_data[rd]["elo"] += p["elo_correct"]
+        rd_data[rd]["stats"] += p["stats_correct"]
+        rd_data[rd]["form"] += p["form_correct"]
+        rd_data[rd]["ens"] += p["ensemble_correct"]
+
+    rd_rows = []
+    cum = {"elo": 0, "ens": 0, "n": 0}
+    for rd in sorted(rd_data.keys()):
+        d = rd_data[rd]
+        cum["elo"] += d["elo"]; cum["ens"] += d["ens"]; cum["n"] += d["n"]
+        rd_rows.append({
+            "Round": rd, "Games": d["n"],
+            "Elo": round(d["elo"] / d["n"] * 100, 1),
+            "Stats": round(d["stats"] / d["n"] * 100, 1),
+            "Form": round(d["form"] / d["n"] * 100, 1),
+            "Ensemble": round(d["ens"] / d["n"] * 100, 1),
+            "Cum Ens": round(cum["ens"] / cum["n"] * 100, 1),
+        })
+    rd_df = pd.DataFrame(rd_rows)
+
+    fig_rd = go.Figure()
+    fig_rd.add_trace(go.Bar(x=rd_df["Round"], y=rd_df["Ensemble"], name="Ensemble",
+        marker_color=["#22c55e" if a >= 62.5 else ("#f59e0b" if a >= 50 else "#ef4444") for a in rd_df["Ensemble"]]))
+    fig_rd.add_trace(go.Scatter(x=rd_df["Round"], y=rd_df["Cum Ens"], name="Cumulative",
+        line=dict(color="#60a5fa", width=3), mode="lines+markers"))
+    fig_rd.add_trace(go.Scatter(x=rd_df["Round"], y=rd_df["Elo"], name="Elo Only",
+        line=dict(color="#a855f7", width=2, dash="dot"), mode="lines+markers", marker=dict(size=5)))
+    fig_rd.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+        yaxis_title="Accuracy %", yaxis_range=[0, 100], height=400, xaxis=dict(dtick=1))
+    fig_rd.add_hline(y=50, line_dash="dot", line_color="#334155", annotation_text="Coin flip")
+    st.plotly_chart(fig_rd, use_container_width=True)
+
+    st.dataframe(rd_df.style.format({
+        "Elo": "{:.0f}%", "Stats": "{:.0f}%", "Form": "{:.0f}%",
+        "Ensemble": "{:.0f}%", "Cum Ens": "{:.1f}%",
+    }), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Calibration Analysis")
+    st.markdown("Are our probabilities honest? A well-calibrated model's predicted probability should match actual win rate.")
+
+    buckets = {}
+    for p in BT_PREDS:
+        conf = max(p["ensemble_p"], 1 - p["ensemble_p"])
+        bucket = int(conf * 10) * 10
+        if bucket not in buckets:
+            buckets[bucket] = {"n": 0, "correct": 0}
+        buckets[bucket]["n"] += 1
+        pick_correct = p["ensemble_correct"]
+        buckets[bucket]["correct"] += pick_correct
+
+    cal_data = []
+    for b in sorted(buckets.keys()):
+        d = buckets[b]
+        cal_data.append({
+            "Confidence": f"{b}-{b+10}%",
+            "Predicted": b + 5,
+            "Actual": round(d["correct"] / d["n"] * 100, 1),
+            "Games": d["n"],
+        })
+    cal_df = pd.DataFrame(cal_data)
+
+    fig_cal = go.Figure()
+    fig_cal.add_trace(go.Bar(x=cal_df["Confidence"], y=cal_df["Actual"], name="Actual Win%",
+        marker_color="#3b82f6", text=cal_df["Games"], textposition="outside"))
+    fig_cal.add_trace(go.Scatter(x=cal_df["Confidence"], y=cal_df["Predicted"], name="Perfect Calibration",
+        line=dict(color="#f59e0b", width=2, dash="dash"), mode="lines+markers"))
+    fig_cal.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+        yaxis_title="Win %", title="Calibration: Predicted vs Actual", height=350)
+    st.plotly_chart(fig_cal, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Weight Optimizer")
+    st.markdown("Grid search over ~2,400 weight combinations for optimal ensemble blend.")
+
+    if st.button("Optimize Ensemble Weights", type="primary"):
+        with st.spinner("Searching..."):
+            best_acc, best_p = 0, None
+            for ew_t in [0.25, 0.30, 0.35, 0.40, 0.50]:
+                for sw_t in [0.10, 0.15, 0.20, 0.25, 0.30]:
+                    for fw_t in [0.10, 0.15, 0.20, 0.25, 0.30]:
+                        for hw_t in [0.05, 0.08, 0.10, 0.12]:
+                            for cw_t in [0.05, 0.08, 0.10]:
+                                ps = full_backtest(RESULTS_2026, ew_t, sw_t, fw_t, hw_t, cw_t, elo_k, elo_home_pts, elo_mov)
+                                acc = sum(1 for p in ps if p["ensemble_correct"]) / len(ps)
+                                if acc > best_acc:
+                                    best_acc = acc
+                                    best_p = {"elo": ew_t, "stats": sw_t, "form": fw_t, "home": hw_t, "ctx": cw_t,
+                                              "correct": sum(1 for p in ps if p["ensemble_correct"]), "total": len(ps)}
+
+            if best_p:
+                st.success(f"Optimal: **{best_acc:.1%}** ({best_p['correct']}/{best_p['total']})")
+                oc1, oc2, oc3 = st.columns(3)
+                oc1.metric("Elo", f"{best_p['elo']:.2f}", f"{best_p['elo'] - elo_w:+.2f}")
+                oc1.metric("Stats", f"{best_p['stats']:.2f}", f"{best_p['stats'] - stats_w:+.2f}")
+                oc2.metric("Form", f"{best_p['form']:.2f}", f"{best_p['form'] - form_w:+.2f}")
+                oc2.metric("Home", f"{best_p['home']:.2f}", f"{best_p['home'] - home_w:+.2f}")
+                oc3.metric("Context", f"{best_p['ctx']:.2f}", f"{best_p['ctx'] - context_w:+.2f}")
+
+
+# ========================= TEAM STATS =========================================
 with tab_stats:
     st.subheader("NRL.com Team Stats (Per-Game Averages)")
-    st.caption("Real team aggregate stats from nrl.com/stats/teams. All 17 teams, 14 statistical categories. Recent form adjusts z-scores by last-5-game scoring trends.")
 
     for m in MATCHES:
         with st.expander(f"{m['Home']} vs {m['Away']} -- {m['Venue']}"):
             col_h, col_a = st.columns(2)
-
-            for col, team_name in [(col_h, m["Home"]), (col_a, m["Away"])]:
+            for col, team in [(col_h, m["Home"]), (col_a, m["Away"])]:
                 with col:
-                    ts = team_strengths[team_name]
-                    rf = RECENT_FORM[team_name]
-                    s = SEASON[team_name]
-                    st.markdown(f"### {team_name}")
-                    st.markdown(f"**Record:** {s['W']}W-{s['L']}L ({s['W']/s['P']*100:.0f}%)")
-                    st.markdown(f"**Attack:** z={ts['atk_z']:+.2f} (#{ts['atk_rank']}) | raw={ts['atk_z_raw']:+.2f}")
-                    st.markdown(f"**Defence:** z={ts['def_z']:+.2f} (#{ts['def_rank']}) | raw={ts['def_z_raw']:+.2f}")
-                    st.markdown(f"**Last 5 avg:** {rf['recent_scored']} scored, {rf['recent_conceded']} conceded")
-                    st.markdown(f"**Season avg:** {rf['season_scored']} scored, {rf['season_conceded']} conceded")
+                    s = SEASON[team]; sc = SCORING.get(team, {}); z = ZSCORES.get(team, {})
+                    st.markdown(f"### {team}")
+                    st.markdown(f"**Record:** {s['W']}W-{s['L']}L | **Elo:** {ELO_RATINGS.get(team, 1500):.0f}")
+                    st.markdown(f"**Attack:** z={z.get('atk_z',0):+.2f} (#{z.get('atk_rank',0)})")
+                    st.markdown(f"**Defence:** z={z.get('def_z',0):+.2f} (#{z.get('def_rank',0)})")
+                    st.markdown(f"**L5:** {sc.get('recent_scored',0):.0f} scored, {sc.get('recent_conceded',0):.0f} conceded")
+                    st.markdown(f"**Pyth:** {sc.get('pyth',0.5):.0%} | **Form margin:** {sc.get('form_margin',0):+.1f}")
 
-                    trend_icon = "↑" if rf["atk_trend"] > 0.05 else ("↓" if rf["atk_trend"] < -0.05 else "→")
-                    st.markdown(f"**Atk trend:** {trend_icon} {rf['atk_trend']:+.1%} | **Def trend:** {rf['def_trend']:+.1%}")
-
-            compare_stats = ["Points", "Tries", "Linebreaks", "TackleBreaks", "PCM", "TryAssists", "Offloads", "RunMetres"]
-            h_vals = [TEAM_STATS[m["Home"]][s] for s in compare_stats]
-            a_vals = [TEAM_STATS[m["Away"]][s] for s in compare_stats]
-
-            fig_cmp = go.Figure()
-            fig_cmp.add_trace(go.Bar(name=m["Home"], x=compare_stats, y=h_vals, marker_color="#3b82f6"))
-            fig_cmp.add_trace(go.Bar(name=m["Away"], x=compare_stats, y=a_vals, marker_color="#ef4444"))
-            fig_cmp.update_layout(barmode="group", template="plotly_dark",
-                title="Per-Game Attack Stats Comparison",
-                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=350,
-                margin=dict(l=40,r=20,t=40,b=40))
-            st.plotly_chart(fig_cmp, use_container_width=True)
-
-            def_stats = ["Tackles", "MissedTackles", "IneffTackles", "Errors"]
-            h_dvals = [TEAM_STATS[m["Home"]][s] for s in def_stats]
-            a_dvals = [TEAM_STATS[m["Away"]][s] for s in def_stats]
-
-            fig_def = go.Figure()
-            fig_def.add_trace(go.Bar(name=m["Home"], x=def_stats, y=h_dvals, marker_color="#3b82f6"))
-            fig_def.add_trace(go.Bar(name=m["Away"], x=def_stats, y=a_dvals, marker_color="#ef4444"))
-            fig_def.update_layout(barmode="group", template="plotly_dark",
-                title="Per-Game Defence Stats Comparison",
-                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300,
-                margin=dict(l=40,r=20,t=40,b=40))
-            st.plotly_chart(fig_def, use_container_width=True)
+            cmp = ["Points", "Tries", "Linebreaks", "TackleBreaks", "PCM", "TryAssists", "Offloads", "RunMetres"]
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name=m["Home"], x=cmp, y=[TEAM_STATS[m["Home"]][s] for s in cmp], marker_color="#3b82f6"))
+            fig.add_trace(go.Bar(name=m["Away"], x=cmp, y=[TEAM_STATS[m["Away"]][s] for s in cmp], marker_color="#ef4444"))
+            fig.update_layout(barmode="group", template="plotly_dark", title="Attack Stats",
+                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300)
+            st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
-    st.subheader("Full Team Stats Table")
-    ts_rows = []
+    st.subheader("Full League Table")
+    rows = []
     for team in sorted(TEAM_STATS.keys()):
-        s = TEAM_STATS[team]
-        rf = RECENT_FORM.get(team, {})
-        ts_rows.append({
-            "Team": team, "P": s["played"],
-            "Pts/G": s["Points"], "Tries/G": s["Tries"], "LB/G": s["Linebreaks"],
-            "TB/G": s["TackleBreaks"], "PCM/G": s["PCM"], "RunM/G": s["RunMetres"],
-            "Tkl/G": s["Tackles"], "MissT/G": s["MissedTackles"],
-            "Err/G": s["Errors"],
-            "L5 Scored": rf.get("recent_scored", 0), "L5 Conceded": rf.get("recent_conceded", 0),
-        })
-    ts_df = pd.DataFrame(ts_rows)
-    st.dataframe(ts_df.style.format({
-        "Pts/G": "{:.1f}", "Tries/G": "{:.1f}", "LB/G": "{:.1f}", "TB/G": "{:.1f}",
-        "PCM/G": "{:.1f}", "RunM/G": "{:.0f}", "Tkl/G": "{:.1f}", "MissT/G": "{:.1f}",
-        "Err/G": "{:.1f}", "L5 Scored": "{:.1f}", "L5 Conceded": "{:.1f}",
+        s = TEAM_STATS[team]; sc = SCORING.get(team, {})
+        rows.append({"Team": team, "P": s["played"], "Pts/G": s["Points"], "Tries": s["Tries"],
+            "LB": s["Linebreaks"], "TB": s["TackleBreaks"], "PCM": s["PCM"], "RunM": s["RunMetres"],
+            "Tkl": s["Tackles"], "MissT": s["MissedTackles"], "Err": s["Errors"],
+            "Elo": round(ELO_RATINGS.get(team, 1500)), "Pyth%": round(sc.get("pyth", 0.5) * 100, 1)})
+    st.dataframe(pd.DataFrame(rows).style.format({
+        "Pts/G": "{:.1f}", "Tries": "{:.1f}", "LB": "{:.1f}", "TB": "{:.1f}", "PCM": "{:.1f}",
+        "RunM": "{:.0f}", "Tkl": "{:.1f}", "MissT": "{:.1f}", "Err": "{:.1f}", "Pyth%": "{:.1f}%",
     }), use_container_width=True, hide_index=True)
 
 
-# =========================  GAME BREAKDOWNS  ==================================
-with tab_detail:
-    st.subheader("Per-Game Model Breakdown")
-    for _, g in df.iterrows():
-        with st.expander(f"{g['Match']}  |  {g['Bet']}  |  Edge {g['Edge_pp']:+.1f}pp"):
-            st.markdown(f"**{g['Venue']}** -- {g['Kickoff']} -- Ref: {g['Referee']} ({g['Ref_Boost']:+.1f}pp)")
-            st.markdown("---")
-
-            h_season = SEASON[g["Home"]]
-            a_season = SEASON[g["Away"]]
-            h_rf = RECENT_FORM[g["Home"]]
-            a_rf = RECENT_FORM[g["Away"]]
-
-            ca, cb = st.columns(2)
-            with ca:
-                st.markdown(f"### {g['Home']} (Home)")
-                st.markdown(f"**Record:** {h_season['W']}W-{h_season['L']}L ({h_season['W']/h_season['P']*100:.0f}%)")
-                st.markdown(f"**Attack:** #{g['H_Atk_rank']} (z={g['H_Atk_z']:+.2f})")
-                st.markdown(f"**Defence:** #{g['H_Def_rank']} (z={g['H_Def_z']:+.2f})")
-                st.markdown(f"**Last 5:** {h_rf['recent_scored']} scored / {h_rf['recent_conceded']} conceded")
-                st.caption(f"Outs: {g['H_Outs']}")
-
-            with cb:
-                st.markdown(f"### {g['Away']} (Away)")
-                st.markdown(f"**Record:** {a_season['W']}W-{a_season['L']}L ({a_season['W']/a_season['P']*100:.0f}%)")
-                st.markdown(f"**Attack:** #{g['A_Atk_rank']} (z={g['A_Atk_z']:+.2f})")
-                st.markdown(f"**Defence:** #{g['A_Def_rank']} (z={g['A_Def_z']:+.2f})")
-                st.markdown(f"**Last 5:** {a_rf['recent_scored']} scored / {a_rf['recent_conceded']} conceded")
-                st.caption(f"Outs: {g['A_Outs']}")
-
-            st.markdown("---")
-            st.markdown("**Model Breakdown:**")
-            st.code(
-                f"Attack edge:   Home Atk z({g['H_Atk_z']:+.2f}) - Away Def z({g['A_Def_z']:+.2f}) = {g['Atk_Edge']:+.3f}  x {attack_w:.2f}\n"
-                f"Defence edge:  Home Def z({g['H_Def_z']:+.2f}) - Away Atk z({g['A_Atk_z']:+.2f}) = {g['Def_Edge']:+.3f}  x {defence_w:.2f}\n"
-                f"Form edge:     Win% ({h_season['W']/h_season['P']*100:.0f}% - {a_season['W']/a_season['P']*100:.0f}%) = {g['Form_Edge']:+.3f}  x {form_w:.2f}\n"
-                f"Home base:     0.150  x {home_w:.2f}\n"
-                f"Ref context:   {g['Ref_Boost']:+.1f}pp / 200 = {g['Ref_Edge']:+.3f}  x {context_w:.2f}\n"
-                f"{'='*55}\n"
-                f"Composite score: {g['Score']:+.4f}  ->  logistic  ->  {g['Home']} {g['Home_Prob']:.1%}\n"
-                f"Fair odds: ${g['Fair_H']:.2f} / ${g['Fair_A']:.2f}   Market: ${g['Mkt_H']:.2f} / ${g['Mkt_A']:.2f}\n"
-                f"Edge: {g['Edge_pp']:+.1f}pp"
-            )
-
-
-# =========================  POWER RANKINGS  ===================================
-with tab_power:
-    st.subheader("Team Power Rankings (All 17 Teams)")
-    st.caption("Based on NRL.com team stats + recent scoring form adjustment. Higher z = stronger.")
-
-    pr_data = []
-    for team, data in sorted(team_strengths.items(), key=lambda x: x[1]["atk_z"], reverse=True):
-        s = SEASON[team]
-        rf = RECENT_FORM[team]
-        pr_data.append({
-            "Team": team, "Atk Z": data["atk_z"], "Def Z": data["def_z"],
-            "Atk#": data["atk_rank"], "Def#": data["def_rank"],
-            "Win%": round(s["W"]/s["P"]*100, 1),
-            "L5 Scored": rf["recent_scored"], "L5 Conceded": rf["recent_conceded"],
-        })
-    pr_df = pd.DataFrame(pr_data)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        atk = pr_df.sort_values("Atk Z", ascending=True)
-        fig_a = px.bar(atk, x="Atk Z", y="Team", orientation="h", title="Attack Power (z-score)",
-            color="Atk Z", color_continuous_scale="Greens", template="plotly_dark")
-        fig_a.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-            coloraxis_showscale=False, yaxis_title="")
-        st.plotly_chart(fig_a, use_container_width=True)
-
-    with col2:
-        dfe = pr_df.sort_values("Def Z", ascending=True)
-        fig_d = px.bar(dfe, x="Def Z", y="Team", orientation="h", title="Defence Power (z-score)",
-            color="Def Z", color_continuous_scale="Blues", template="plotly_dark")
-        fig_d.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-            coloraxis_showscale=False, yaxis_title="")
-        st.plotly_chart(fig_d, use_container_width=True)
-
-    st.dataframe(
-        pr_df.style.format({"Atk Z": "{:+.2f}", "Def Z": "{:+.2f}", "Win%": "{:.0f}%",
-                           "L5 Scored": "{:.1f}", "L5 Conceded": "{:.1f}"}),
-        use_container_width=True, hide_index=True,
-    )
-
-    fig_scatter = px.scatter(pr_df, x="Atk Z", y="Def Z", text="Team",
-        title="Attack vs Defence (top-right = strongest)", template="plotly_dark",
-        color="Win%", color_continuous_scale="RdYlGn")
-    fig_scatter.update_traces(textposition="top center", marker=dict(size=12))
-    fig_scatter.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-        xaxis_title="Attack z-score", yaxis_title="Defence z-score", height=500)
-    fig_scatter.add_hline(y=0, line_dash="dot", line_color="#334155")
-    fig_scatter.add_vline(x=0, line_dash="dot", line_color="#334155")
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-
-# =========================  BACKTESTING  ======================================
-with tab_backtest:
-    st.subheader("Self-Tuning Model: Rounds 1-14 Backtest")
-    st.markdown("Tests current weights against **108 completed matches** using team-level z-scores + evolving form. "
-                "Hit 'Optimize' to find the weight combination that maximizes prediction accuracy.")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current Accuracy", f"{bt_accuracy:.1%}")
-    c2.metric("Correct / Total", f"{bt_correct} / {bt_total}")
-    c3.metric("Brier Score", f"{bt_brier:.3f}", help="Lower is better. 0.25 = coin flip, 0.0 = perfect")
-    c4.metric("Matches Tested", bt_total)
-
-    st.markdown("#### Accuracy by Round")
-    rd_data = []
-    cumulative_c, cumulative_t = 0, 0
-    for rd in sorted(bt_rounds.keys()):
-        r = bt_rounds[rd]
-        cumulative_c += r["correct"]
-        cumulative_t += r["total"]
-        rd_data.append({
-            "Round": rd, "Correct": r["correct"], "Games": r["total"],
-            "Round Acc": round(r["correct"] / r["total"] * 100, 1),
-            "Cumulative Acc": round(cumulative_c / cumulative_t * 100, 1),
-        })
-    rd_df = pd.DataFrame(rd_data)
-
-    fig_rd = go.Figure()
-    fig_rd.add_trace(go.Bar(x=rd_df["Round"], y=rd_df["Round Acc"], name="Round Accuracy",
-        marker_color=["#22c55e" if a >= 62.5 else ("#f59e0b" if a >= 50 else "#ef4444") for a in rd_df["Round Acc"]]))
-    fig_rd.add_trace(go.Scatter(x=rd_df["Round"], y=rd_df["Cumulative Acc"], name="Cumulative",
-        line=dict(color="#60a5fa", width=3), mode="lines+markers"))
-    fig_rd.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
-        yaxis_title="Accuracy %", xaxis_title="Round", yaxis_range=[0, 100],
-        barmode="overlay", height=400)
-    fig_rd.add_hline(y=50, line_dash="dot", line_color="#334155", annotation_text="Coin flip")
-    st.plotly_chart(fig_rd, use_container_width=True)
-
-    st.dataframe(rd_df.style.format({"Round Acc": "{:.1f}%", "Cumulative Acc": "{:.1f}%"}),
-        use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.subheader("Weight Optimizer")
-    st.markdown("Grid searches ~3,600 weight combinations to find optimal parameters.")
-
-    if st.button("Optimize Weights (takes ~10s)", type="primary"):
-        with st.spinner("Searching optimal parameters..."):
-            opt_acc, opt_brier, opt_params = optimize_weights()
-
-        if opt_params:
-            st.success(f"Optimal accuracy: **{opt_acc:.1%}** ({opt_params['correct']}/{opt_params['total']}) | Brier: {opt_brier:.3f}")
-
-            oc1, oc2, oc3 = st.columns(3)
-            oc1.metric("Attack Weight", f"{opt_params['attack_w']:.2f}", f"{opt_params['attack_w'] - attack_w:+.2f}")
-            oc1.metric("Defence Weight", f"{opt_params['defence_w']:.2f}", f"{opt_params['defence_w'] - defence_w:+.2f}")
-            oc2.metric("Form Weight", f"{opt_params['form_w']:.2f}", f"{opt_params['form_w'] - form_w:+.2f}")
-            oc2.metric("Home Weight", f"{opt_params['home_w']:.2f}", f"{opt_params['home_w'] - home_w:+.2f}")
-            oc3.metric("Logistic Scale", f"{opt_params['scale']:.1f}", f"{opt_params['scale'] - 2.0:+.1f}")
-            oc3.metric("Home Constant", f"{opt_params['home_const']:.2f}", f"{opt_params['home_const'] - 0.15:+.2f}")
-
-            st.info("Set the sidebar sliders to these values to apply the optimized weights to Round 15 predictions.")
-
-            opt_rd = opt_params["rounds"]
-            opt_rd_data = []
-            oc, ot = 0, 0
-            for rd in sorted(opt_rd.keys()):
-                r = opt_rd[rd]
-                oc += r["correct"]
-                ot += r["total"]
-                opt_rd_data.append({
-                    "Round": rd, "Correct": r["correct"], "Games": r["total"],
-                    "Optimized Acc": round(r["correct"] / r["total"] * 100, 1),
-                    "Cumulative": round(oc / ot * 100, 1),
-                })
-            opt_df = pd.DataFrame(opt_rd_data)
-            st.dataframe(opt_df.style.format({"Optimized Acc": "{:.1f}%", "Cumulative": "{:.1f}%"}),
-                use_container_width=True, hide_index=True)
-
-
-# =========================  METHODOLOGY  ======================================
+# ========================= METHODOLOGY ========================================
 with tab_method:
-    st.subheader("How It Works")
-    st.markdown("""
-**Data source:** Team aggregate per-game stats from [nrl.com/stats/teams](https://www.nrl.com/stats/) for all 17 NRL teams. Scraped 11 June 2026 via same-origin fetch of NRL.com q-data attributes.
+    st.subheader("NRL Moneyball v3 -- Multi-Signal Ensemble")
+    st.markdown(f"""
+**Five independent prediction signals, blended into one probability:**
 
-**Why team stats, not player stats?** Player-level stats (top-50 leaderboards) only cover star performers, leaving 50%+ of players estimated via position defaults. Team aggregate stats from NRL.com cover 100% of actual on-field output for all 17 teams. No estimation needed.
+**1. Elo Ratings (weight: {elo_w:.0%})**
+Dynamic power ratings updated after every game. K={elo_k}, home advantage={elo_home_pts} Elo points.
+{'Margin-of-victory adjustment: blowouts move ratings more than close wins (log-scaled).' if elo_mov else 'No margin adjustment.'}
+Backtest accuracy: **{BT_ELO/BT_N:.1%}** on {BT_N} matches. Fully forward-looking, zero data leakage.
 
-**14 stats tracked per team (per game):**
-Points, Tries, Linebreaks, Tackle Breaks, Post Contact Metres, Try Assists, Offloads, Run Metres, All Runs, Tackles, Missed Tackles, Ineffective Tackles, Errors, Kick Metres
+**2. Team Stats z-scores (weight: {stats_w:.0%})**
+14 statistical categories from nrl.com/stats/teams for all 17 NRL teams. Attack composite (7 stats, weighted: Linebreaks x1.5, Try Assists x1.2) and defence composite (4 stats, negatives inverted). Adjusted by last-5-game scoring trends (30% influence).
+Backtest accuracy: **{BT_STATS/BT_N:.1%}** (uses full-season stats, leakage caveat).
 
-**Recent form weighting (last 5 games):**
-For each team, the last 5 completed matches are extracted from the 108-match results database. Average points scored and conceded in these 5 games are compared against the season average. The z-scores are adjusted by 30% of the trend factor, giving recent performance more influence than early-season results.
+**3. Form + Pythagorean (weight: {form_w:.0%})**
+Two sub-signals blended 60/40:
+- **Margin-weighted recent form:** Last 5 games with exponential recency weights (0.5, 0.6, 0.75, 0.9, 1.0). Winning by 30 counts more than winning by 2.
+- **Pythagorean expectation:** PF^2.37 / (PF^2.37 + PA^2.37). Luck-adjusted quality metric that strips out close-game variance.
+Backtest accuracy: **{BT_FORM/BT_N:.1%}** (forward-looking).
 
-**Attack composite z-score:** Run Metres + Tackle Breaks + PCM + Linebreaks (x1.5) + Try Assists (x1.2) + Offloads + Points, adjusted by recent attacking trend
+**4. Home Advantage (weight: {home_w:.0%})**
+Flat 57% baseline home win probability (NRL historical average).
 
-**Defence composite z-score:** Tackles (positive) + Missed Tackles (inverted) + Ineffective Tackles (inverted) + Errors (inverted), adjusted by recent defensive trend
+**5. Referee Context (weight: {context_w:.0%})**
+Historical referee bias toward home/away teams from the referee dashboard. Converted to probability adjustment around 50%.
 
-**Match prediction:**
-1. Team attack z vs opponent defence z = attack edge
-2. Team defence z vs opponent attack z = defence edge
-3. Season win% differential = form edge
-4. Home ground advantage = flat base (0.15)
-5. Referee historical bias = context edge
-6. Weighted composite through logistic function (scale 2.0), clamped 25-82%
+**Ensemble:** Weighted average of component probabilities, clamped to 18-85%.
 
-**Self-tuning:** Backtesting engine replays all 108 matches from Rounds 1-14 with evolving W/L form. Grid search optimizer tests ~3,600 weight combinations to find the set that maximizes historical accuracy. Current optimized accuracy: 63.4%.
+**Total Points Model:** Expected score = avg of (team's home/away scoring avg, opponent's home/away conceding avg), blended 60/40 season vs recent form. H2H history blended in at 30% weight when 2+ prior meetings exist.
 
-**Edge** = Model probability minus market implied probability (1/odds). Positive = market underpricing.
+**Value Detection:** Model probability minus market implied probability (1/odds). Positive edge = market underpricing.
+
+**Kelly Criterion:** Optimal bet fraction = (bp - q) / b where b = odds - 1, p = model probability, q = 1 - p. Shown as a guide, not a recommendation.
+
+**Ensemble accuracy: {BT_ENS/BT_N:.1%}** on {BT_N} matches | Brier: {BT_BRIER:.3f}
     """)
 
     st.subheader("Data Sources")
     st.markdown("""
-| Data | Source | Date |
-|------|--------|------|
-| Team stats (14 categories, 17 teams) | [nrl.com/stats/teams](https://www.nrl.com/stats/) | 11 June 2026 |
-| Match results (108 games, R1-14) | Existing dashboard | Cumulative |
-| Market odds (Round 15) | Sportsbet via nrl.com | 11 June 2026 |
-| Referee bias data | Existing dashboard | Cumulative |
+| Data | Source | Notes |
+|------|--------|-------|
+| Team stats (14 stats, 17 teams) | nrl.com/stats/teams | Scraped 11 June 2026 |
+| Match results (R1-14) | Dashboard DB | 108+ matches, forward-looking backtest |
+| Market odds (R15) | Sportsbet via nrl.com | 11 June 2026 |
+| Referee bias | Dashboard DB | Historical home/away win rates |
+| Elo ratings | Computed | From 2026 results, K={elo_k}, all teams start 1500 |
     """)
-
     st.caption("Model is exploratory. Not financial advice. Gamble responsibly.")
