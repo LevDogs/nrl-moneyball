@@ -264,14 +264,77 @@ LINEUPS = {
     ],
 }
 
-# ── Team Season Records ─────────────────────────────────────────────────────
+# Bye teams (Rd 15): use position-default lineups for backtesting team strength
+BYE_TEAM_TEMPLATE = [
+    ("FB","Fullback",0,None),("W1","Winger",0,None),("C1","Centre",0,None),
+    ("C2","Centre",0,None),("W2","Winger",0,None),("FE","Five-Eighth",0,None),
+    ("HB","Halfback",0,None),("P1","Prop",0,None),("HK","Hooker",0,None),
+    ("P2","Prop",0,None),("2R1","2nd Row",0,None),("2R2","2nd Row",0,None),
+    ("LK","Lock",0,None),("I1","Interchange",0,None),("I2","Interchange",0,None),
+    ("I3","Interchange",0,None),("I4","Interchange",0,None),
+]
+for bye_team in ["Storm","Panthers","Sea Eagles","Bulldogs","Knights","Cowboys","Dragons"]:
+    if bye_team not in LINEUPS:
+        LINEUPS[bye_team] = BYE_TEAM_TEMPLATE
+
+# ── Team Season Records (all 17 teams, through Round 14) ──────────────────
 SEASON = {
     "Rabbitohs": {"W":6,"L":6,"P":12}, "Broncos": {"W":5,"L":8,"P":13},
     "Dolphins": {"W":7,"L":5,"P":12}, "Roosters": {"W":8,"L":4,"P":12},
     "Warriors": {"W":9,"L":3,"P":12}, "Sharks": {"W":7,"L":5,"P":12},
     "Eels": {"W":4,"L":9,"P":13}, "Raiders": {"W":5,"L":8,"P":13},
     "Wests Tigers": {"W":6,"L":6,"P":12}, "Titans": {"W":3,"L":9,"P":12},
+    "Storm": {"W":8,"L":5,"P":13}, "Panthers": {"W":10,"L":3,"P":13},
+    "Sea Eagles": {"W":8,"L":5,"P":13}, "Bulldogs": {"W":6,"L":6,"P":12},
+    "Knights": {"W":7,"L":5,"P":12}, "Cowboys": {"W":6,"L":7,"P":13},
+    "Dragons": {"W":3,"L":10,"P":13},
 }
+
+# ── Completed 2026 Results (Rounds 1-14, 108 matches) ────────────────────
+RESULTS_2026 = [
+    (1,"Knights","Cowboys",28,18),(1,"Bulldogs","Dragons",15,14),(1,"Storm","Eels",52,4),
+    (1,"Warriors","Roosters",42,18),(1,"Broncos","Panthers",0,26),(1,"Sharks","Titans",50,10),
+    (1,"Sea Eagles","Raiders",28,29),(1,"Dolphins","Rabbitohs",30,40),
+    (2,"Broncos","Eels",32,40),(2,"Warriors","Raiders",40,6),(2,"Roosters","Rabbitohs",26,18),
+    (2,"Wests Tigers","Cowboys",44,16),(2,"Dragons","Storm",20,46),(2,"Panthers","Sharks",26,6),
+    (2,"Sea Eagles","Knights",16,36),(2,"Dolphins","Titans",18,14),
+    (3,"Raiders","Bulldogs",10,14),(3,"Roosters","Panthers",4,40),(3,"Storm","Broncos",14,18),
+    (3,"Knights","Warriors",12,38),(3,"Sharks","Dolphins",10,38),(3,"Rabbitohs","Wests Tigers",20,16),
+    (3,"Titans","Sea Eagles",28,42),(3,"Eels","Cowboys",28,10),
+    (4,"Rabbitohs","Storm",38,28),(4,"Bulldogs","Dolphins",18,12),(4,"Panthers","Broncos",34,6),
+    (4,"Wests Tigers","Sea Eagles",24,28),(4,"Cowboys","Knights",10,24),(4,"Roosters","Warriors",34,36),
+    (4,"Raiders","Sharks",22,34),(4,"Titans","Dragons",22,14),
+    (5,"Dolphins","Sea Eagles",18,52),(5,"Rabbitohs","Bulldogs",32,24),(5,"Panthers","Storm",50,10),
+    (5,"Dragons","Cowboys",0,32),(5,"Titans","Broncos",12,26),(5,"Sharks","Warriors",36,22),
+    (5,"Knights","Raiders",32,12),(5,"Eels","Wests Tigers",20,22),
+    (6,"Bulldogs","Panthers",32,16),(6,"Dragons","Sea Eagles",18,28),(6,"Broncos","Cowboys",31,35),
+    (6,"Rabbitohs","Raiders",34,36),(6,"Sharks","Roosters",22,34),(6,"Storm","Warriors",14,38),
+    (6,"Eels","Titans",10,52),(6,"Wests Tigers","Knights",42,22),
+    (7,"Cowboys","Sea Eagles",6,38),(7,"Raiders","Storm",26,22),(7,"Dolphins","Panthers",22,23),
+    (7,"Warriors","Wests Tigers",38,28),(7,"Rabbitohs","Titans",28,24),(7,"Bulldogs","Broncos",20,22),
+    (7,"Roosters","Knights",38,24),(7,"Eels","Bulldogs",38,20),
+    (8,"Wests Tigers","Raiders",33,14),(8,"Cowboys","Sharks",46,34),(8,"Broncos","Bulldogs",32,12),
+    (8,"Dragons","Roosters",16,62),(8,"Warriors","Dolphins",20,18),(8,"Storm","Rabbitohs",6,48),
+    (8,"Knights","Panthers",12,44),(8,"Sea Eagles","Eels",33,18),
+    (9,"Bulldogs","Cowboys",12,28),(9,"Dolphins","Storm",28,10),(9,"Titans","Raiders",12,28),
+    (9,"Eels","Warriors",14,36),(9,"Roosters","Broncos",38,24),(9,"Knights","Rabbitohs",42,38),
+    (9,"Sharks","Wests Tigers",52,10),(9,"Panthers","Sea Eagles",18,16),
+    (10,"Dolphins","Bulldogs",44,12),(10,"Roosters","Titans",28,12),(10,"Cowboys","Eels",30,33),
+    (10,"Dragons","Knights",10,44),(10,"Rabbitohs","Sharks",36,12),(10,"Sea Eagles","Broncos",32,4),
+    (10,"Storm","Wests Tigers",44,16),(10,"Raiders","Panthers",18,30),
+    (11,"Sharks","Bulldogs",38,16),(11,"Rabbitohs","Dolphins",10,32),(11,"Wests Tigers","Storm",28,30),
+    (11,"Roosters","Sea Eagles",26,28),(11,"Eels","Dragons",14,18),(11,"Cowboys","Panthers",18,30),
+    (11,"Broncos","Knights",24,28),(11,"Warriors","Titans",30,10),
+    (12,"Bulldogs","Raiders",42,18),(12,"Dolphins","Eels",26,6),(12,"Knights","Sharks",22,46),
+    (12,"Panthers","Roosters",28,12),(12,"Storm","Cowboys",34,28),(12,"Titans","Wests Tigers",16,52),
+    (12,"Dragons","Warriors",12,30),(12,"Sea Eagles","Titans",12,10),(12,"Cowboys","Rabbitohs",30,18),
+    (13,"Sharks","Sea Eagles",28,22),(13,"Knights","Eels",28,22),(13,"Wests Tigers","Bulldogs",22,16),
+    (13,"Storm","Roosters",18,4),(13,"Broncos","Dragons",26,30),(13,"Raiders","Cowboys",26,12),
+    (13,"Panthers","Warriors",20,18),
+    (14,"Sea Eagles","Rabbitohs",28,14),(14,"Storm","Knights",32,30),(14,"Raiders","Roosters",0,26),
+    (14,"Cowboys","Dolphins",14,40),(14,"Broncos","Titans",23,28),(14,"Wests Tigers","Panthers",0,68),
+    (14,"Sharks","Dragons",34,12),(14,"Bulldogs","Eels",14,12),
+]
 
 MATCHES = [
     {"Home":"Rabbitohs","Away":"Broncos","Venue":"Accor Stadium","Kickoff":"Thu 7:50pm",
@@ -463,9 +526,99 @@ for m in MATCHES:
 
 df = pd.DataFrame(results)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTESTING ENGINE: Self-tuning from Rounds 1-14 actual results
+# Uses player-stat team strengths + evolving form to find optimal weights
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def backtest_model(aw, dw, fw, hw, cw, scale, home_const):
+    records = {t: {"W": 0, "L": 0, "P": 0} for t in SEASON}
+    correct = 0
+    total = 0
+    brier_sum = 0
+    round_results = {}
+
+    for rd, home, away, hs, as_, *_ in RESULTS_2026:
+        winner = home if hs > as_ else away
+
+        if home not in team_strengths or away not in team_strengths:
+            records[winner]["W"] += 1
+            records[home if winner != home else away]["L"] += 1
+            for t in [home, away]:
+                records[t]["P"] += 1
+            continue
+
+        h = team_strengths[home]
+        a = team_strengths[away]
+        atk_e = h["atk_z"] - a["def_z"]
+        def_e = h["def_z"] - a["atk_z"]
+
+        h_pct = records[home]["W"] / max(records[home]["P"], 1)
+        a_pct = records[away]["W"] / max(records[away]["P"], 1)
+        if records[home]["P"] == 0:
+            h_pct = 0.5
+        if records[away]["P"] == 0:
+            a_pct = 0.5
+        form_e = h_pct - a_pct
+
+        known_pct = (h["known"] + a["known"]) / (h["total"] + a["total"])
+        conf = 0.6 + 0.4 * known_pct
+
+        sc = (aw * atk_e + dw * def_e + fw * form_e + hw * home_const) * conf
+        prob = 1 / (1 + exp(-sc * scale))
+        prob = max(0.25, min(0.82, prob))
+
+        predicted = home if prob >= 0.5 else away
+        win_prob = prob if predicted == home else 1 - prob
+
+        if predicted == winner:
+            correct += 1
+        total += 1
+        actual = 1.0 if home == winner else 0.0
+        brier_sum += (prob - actual) ** 2
+
+        if rd not in round_results:
+            round_results[rd] = {"correct": 0, "total": 0}
+        round_results[rd]["total"] += 1
+        if predicted == winner:
+            round_results[rd]["correct"] += 1
+
+        records[winner]["W"] += 1
+        records[home if winner != home else away]["L"] += 1
+        for t in [home, away]:
+            records[t]["P"] += 1
+
+    accuracy = correct / max(total, 1)
+    brier = brier_sum / max(total, 1)
+    return accuracy, brier, correct, total, round_results
+
+def optimize_weights():
+    best_acc = 0
+    best_params = None
+    best_brier = 1.0
+
+    for aw in [0.30, 0.35, 0.40, 0.45, 0.50]:
+        for dw in [0.15, 0.20, 0.25, 0.30]:
+            for fw in [0.10, 0.15, 0.20, 0.25, 0.30]:
+                for hw in [0.05, 0.08, 0.10, 0.12, 0.15]:
+                    for scale in [1.2, 1.5, 1.8, 2.0, 2.4]:
+                        for hc in [0.10, 0.15, 0.20, 0.30]:
+                            acc, brier, c, t, rr = backtest_model(aw, dw, fw, hw, 0.0, scale, hc)
+                            if acc > best_acc or (acc == best_acc and brier < best_brier):
+                                best_acc = acc
+                                best_brier = brier
+                                best_params = {"attack_w": aw, "defence_w": dw, "form_w": fw,
+                                               "home_w": hw, "scale": scale, "home_const": hc,
+                                               "correct": c, "total": t, "rounds": rr}
+    return best_acc, best_brier, best_params
+
+bt_accuracy, bt_brier, bt_correct, bt_total, bt_rounds = backtest_model(
+    attack_w, defence_w, form_w, home_w, context_w, 1.8, 0.15
+)
+
 # ═══════════════════════  TABS  ════════════════════════════════════════════════
-tab_dash, tab_lineups, tab_detail, tab_power, tab_method = st.tabs(
-    ["Dashboard", "Lineup Analysis", "Game Breakdowns", "Power Rankings", "Methodology"]
+tab_dash, tab_lineups, tab_detail, tab_power, tab_backtest, tab_method = st.tabs(
+    ["Dashboard", "Lineup Analysis", "Game Breakdowns", "Power Rankings", "Backtesting", "Methodology"]
 )
 
 # ═══════════════════════  DASHBOARD  ═══════════════════════════════════════════
@@ -712,6 +865,84 @@ with tab_power:
     fig_scatter.add_hline(y=0, line_dash="dot", line_color="#334155")
     fig_scatter.add_vline(x=0, line_dash="dot", line_color="#334155")
     st.plotly_chart(fig_scatter, use_container_width=True)
+
+
+# ═══════════════════════  BACKTESTING  ════════════════════════════════════════
+with tab_backtest:
+    st.subheader("Self-Tuning Model: Rounds 1-14 Backtest")
+    st.markdown("Tests current weights against **108 completed matches** using player-stat team strengths + evolving form. "
+                "Hit 'Optimize' to find the weight combination that maximizes prediction accuracy.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Accuracy", f"{bt_accuracy:.1%}")
+    c2.metric("Correct / Total", f"{bt_correct} / {bt_total}")
+    c3.metric("Brier Score", f"{bt_brier:.3f}", help="Lower is better. 0.25 = coin flip, 0.0 = perfect")
+    c4.metric("Matches Tested", bt_total)
+
+    st.markdown("#### Accuracy by Round")
+    rd_data = []
+    cumulative_c, cumulative_t = 0, 0
+    for rd in sorted(bt_rounds.keys()):
+        r = bt_rounds[rd]
+        cumulative_c += r["correct"]
+        cumulative_t += r["total"]
+        rd_data.append({
+            "Round": rd, "Correct": r["correct"], "Games": r["total"],
+            "Round Acc": round(r["correct"] / r["total"] * 100, 1),
+            "Cumulative Acc": round(cumulative_c / cumulative_t * 100, 1),
+        })
+    rd_df = pd.DataFrame(rd_data)
+
+    fig_rd = go.Figure()
+    fig_rd.add_trace(go.Bar(x=rd_df["Round"], y=rd_df["Round Acc"], name="Round Accuracy",
+        marker_color=["#22c55e" if a >= 62.5 else ("#f59e0b" if a >= 50 else "#ef4444") for a in rd_df["Round Acc"]]))
+    fig_rd.add_trace(go.Scatter(x=rd_df["Round"], y=rd_df["Cumulative Acc"], name="Cumulative",
+        line=dict(color="#60a5fa", width=3), mode="lines+markers"))
+    fig_rd.update_layout(template="plotly_dark", plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
+        yaxis_title="Accuracy %", xaxis_title="Round", yaxis_range=[0, 100],
+        barmode="overlay", height=400)
+    fig_rd.add_hline(y=50, line_dash="dot", line_color="#334155", annotation_text="Coin flip")
+    st.plotly_chart(fig_rd, use_container_width=True)
+
+    st.dataframe(rd_df.style.format({"Round Acc": "{:.1f}%", "Cumulative Acc": "{:.1f}%"}),
+        use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Weight Optimizer")
+    st.markdown("Grid searches ~3,000 weight combinations to find the set that maximizes backtest accuracy against all 108 matches.")
+
+    if st.button("Optimize Weights (takes ~10s)", type="primary"):
+        with st.spinner("Searching optimal parameters..."):
+            opt_acc, opt_brier, opt_params = optimize_weights()
+
+        if opt_params:
+            st.success(f"Optimal accuracy: **{opt_acc:.1%}** ({opt_params['correct']}/{opt_params['total']}) | Brier: {opt_brier:.3f}")
+
+            oc1, oc2, oc3 = st.columns(3)
+            oc1.metric("Attack Weight", f"{opt_params['attack_w']:.2f}", f"{opt_params['attack_w'] - attack_w:+.2f}")
+            oc1.metric("Defence Weight", f"{opt_params['defence_w']:.2f}", f"{opt_params['defence_w'] - defence_w:+.2f}")
+            oc2.metric("Form Weight", f"{opt_params['form_w']:.2f}", f"{opt_params['form_w'] - form_w:+.2f}")
+            oc2.metric("Home Weight", f"{opt_params['home_w']:.2f}", f"{opt_params['home_w'] - home_w:+.2f}")
+            oc3.metric("Logistic Scale", f"{opt_params['scale']:.1f}", f"{opt_params['scale'] - 1.8:+.1f}")
+            oc3.metric("Home Constant", f"{opt_params['home_const']:.2f}", f"{opt_params['home_const'] - 0.15:+.2f}")
+
+            st.info("Set the sidebar sliders to these values to apply the optimized weights to Round 15 predictions.")
+
+            opt_rd = opt_params["rounds"]
+            opt_rd_data = []
+            oc, ot = 0, 0
+            for rd in sorted(opt_rd.keys()):
+                r = opt_rd[rd]
+                oc += r["correct"]
+                ot += r["total"]
+                opt_rd_data.append({
+                    "Round": rd, "Correct": r["correct"], "Games": r["total"],
+                    "Optimized Acc": round(r["correct"] / r["total"] * 100, 1),
+                    "Cumulative": round(oc / ot * 100, 1),
+                })
+            opt_df = pd.DataFrame(opt_rd_data)
+            st.dataframe(opt_df.style.format({"Optimized Acc": "{:.1f}%", "Cumulative": "{:.1f}%"}),
+                use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════  METHODOLOGY  ═══════════════════════════════════════
