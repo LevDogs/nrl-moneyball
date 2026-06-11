@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from math import exp
 from io import BytesIO
 
-st.set_page_config(page_title="NRL Moneyball", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="NRL Moneyball", page_icon="\U0001f3c8", layout="wide")
 
 st.markdown("""<style>
     [data-testid="stAppViewContainer"] {background: #0a0e14}
@@ -24,16 +24,13 @@ st.markdown("""<style>
     .tag-lean {background:#1e3a5f; color:#93c5fd}
     .tag-skip {background:#1e2a38; color:#6b7280}
     .tag-value {background:#065f46; color:#6ee7b7; margin-left:4px}
-    .player-row {display:flex; justify-content:space-between; padding:4px 8px; border-bottom:1px solid #1e2a38; font-size:0.85rem}
-    .player-known {color:#e5e7eb}
-    .player-est {color:#6b7280; font-style:italic}
     .stat-bar {height:6px; border-radius:3px; margin-top:2px}
 </style>""", unsafe_allow_html=True)
 
-st.markdown("# 🏈 NRL Moneyball")
-st.markdown("**Round 15, 2026 -- Origin II Split Round -- Individual Player Stats from nrl.com**")
+st.markdown("# \U0001f3c8 NRL Moneyball")
+st.markdown("**Round 15, 2026 -- Origin II Split Round -- Team Stats from nrl.com**")
 
-# ── Sidebar ──────────────────────────────────────────────────────────────────
+# -- Sidebar --
 st.sidebar.header("Model Weights")
 attack_w = st.sidebar.slider("Attack Weight", 0.25, 0.60, 0.30)
 defence_w = st.sidebar.slider("Defence Weight", 0.10, 0.40, 0.25)
@@ -43,241 +40,31 @@ context_w = st.sidebar.slider("Context (Ref + Origin)", 0.02, 0.20, 0.07)
 wt = attack_w + defence_w + form_w + home_w + context_w
 st.sidebar.caption(f"Sum: {wt:.2f}" + (" ok" if abs(wt - 1.0) <= 0.03 else " -- adjust to ~1.00"))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# INDIVIDUAL PLAYER STATS -- from nrl.com/stats (Players view, Top 50 per stat)
-# Per-game averages: [RunM, Tackles, MissedT, TackleBreaks, PCM, Linebreaks,
-#                     TryAssists, Offloads, Points, Tries, Errors, AllRuns, KickM, IneffTackles]
-# Source: nrl.com/stats/players -- 18 stat categories, 50 players each
-# Scraped: 11 June 2026
-# Players not in any top-50 leaderboard get position-based estimates
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# TEAM STATS -- per-game averages from nrl.com/stats/teams (all 17 teams)
+# Scraped 11 June 2026 via same-origin fetch from NRL.com q-data
+# =============================================================================
 
-STAT_COLS = ["RunM","Tackles","MissedT","TackleBreaks","PCM","Linebreaks",
-             "TryAssists","Offloads","Points","Tries","Errors","AllRuns","KickM","IneffTackles"]
-
-# Position-based per-game defaults for players not in NRL.com top-50 leaderboards
-# Derived from league averages: team totals / 17 players, adjusted by positional role
-POS_DEFAULTS = {
-    "Fullback":     [120, 18, 2.0, 3.0, 45, 0.8, 0.3, 0.5, 3.0, 0.6, 1.0, 14, 50, 0.8],
-    "Winger":       [95, 14, 1.5, 2.5, 35, 0.6, 0.2, 0.3, 2.5, 0.5, 0.8, 12, 5, 0.6],
-    "Centre":       [85, 20, 2.0, 3.0, 40, 0.4, 0.3, 0.8, 1.5, 0.3, 1.0, 10, 5, 0.8],
-    "Five-Eighth":  [55, 22, 2.5, 1.5, 20, 0.3, 0.6, 0.5, 3.0, 0.2, 1.2, 8, 180, 1.0],
-    "Halfback":     [40, 20, 2.0, 1.0, 15, 0.2, 0.8, 0.3, 4.0, 0.1, 1.0, 6, 300, 0.8],
-    "Prop":         [100, 30, 2.5, 2.0, 50, 0.1, 0.0, 1.0, 0.0, 0.0, 1.2, 12, 0, 1.2],
-    "Hooker":       [45, 35, 2.5, 1.5, 18, 0.2, 0.4, 0.5, 0.5, 0.1, 1.0, 8, 30, 1.0],
-    "2nd Row":      [100, 28, 2.5, 2.5, 45, 0.3, 0.1, 1.2, 0.5, 0.1, 1.0, 12, 5, 1.0],
-    "Lock":         [95, 32, 2.5, 2.0, 40, 0.2, 0.1, 1.0, 0.0, 0.0, 1.0, 11, 5, 1.0],
-    "Interchange":  [60, 22, 1.8, 1.5, 30, 0.1, 0.0, 0.5, 0.0, 0.0, 0.8, 8, 5, 0.8],
+TEAM_STATS = {
+    "Broncos":      {"played":13, "Points":21.2, "Tries":3.6, "Linebreaks":4.2, "TackleBreaks":27.9, "PCM":506.6, "TryAssists":2.9, "Offloads":5.5, "RunMetres":1558.4, "AllRuns":171.9, "Tackles":348.2, "MissedTackles":33.1, "IneffTackles":17.5, "Errors":11.6, "KickMetres":621.6},
+    "Bulldogs":     {"played":13, "Points":17.9, "Tries":3.0, "Linebreaks":4.9, "TackleBreaks":34.8, "PCM":571.1, "TryAssists":2.2, "Offloads":10.8, "RunMetres":1799.0, "AllRuns":193.0, "Tackles":353.5, "MissedTackles":34.0, "IneffTackles":12.9, "Errors":11.2, "KickMetres":617.8},
+    "Cowboys":      {"played":14, "Points":24.5, "Tries":4.4, "Linebreaks":6.0, "TackleBreaks":33.7, "PCM":569.4, "TryAssists":3.8, "Offloads":10.1, "RunMetres":1793.8, "AllRuns":191.8, "Tackles":337.5, "MissedTackles":36.4, "IneffTackles":13.9, "Errors":11.5, "KickMetres":571.6},
+    "Dolphins":     {"played":12, "Points":27.5, "Tries":4.7, "Linebreaks":5.4, "TackleBreaks":33.8, "PCM":573.8, "TryAssists":3.7, "Offloads":10.8, "RunMetres":1839.3, "AllRuns":190.5, "Tackles":357.8, "MissedTackles":29.2, "IneffTackles":13.8, "Errors":11.8, "KickMetres":541.4},
+    "Dragons":      {"played":13, "Points":14.2, "Tries":2.4, "Linebreaks":2.9, "TackleBreaks":27.6, "PCM":557.3, "TryAssists":2.1, "Offloads":10.7, "RunMetres":1630.2, "AllRuns":182.7, "Tackles":378.7, "MissedTackles":31.5, "IneffTackles":15.5, "Errors":11.1, "KickMetres":654.9},
+    "Eels":         {"played":13, "Points":20.7, "Tries":3.8, "Linebreaks":4.0, "TackleBreaks":28.9, "PCM":501.8, "TryAssists":2.9, "Offloads":8.2, "RunMetres":1579.0, "AllRuns":176.3, "Tackles":338.9, "MissedTackles":40.2, "IneffTackles":18.9, "Errors":12.1, "KickMetres":660.2},
+    "Knights":      {"played":13, "Points":28.5, "Tries":5.2, "Linebreaks":6.2, "TackleBreaks":34.5, "PCM":483.3, "TryAssists":4.5, "Offloads":10.4, "RunMetres":1655.2, "AllRuns":177.4, "Tackles":345.2, "MissedTackles":34.4, "IneffTackles":17.4, "Errors":11.9, "KickMetres":587.5},
+    "Panthers":     {"played":13, "Points":33.6, "Tries":5.9, "Linebreaks":6.8, "TackleBreaks":36.1, "PCM":583.4, "TryAssists":4.5, "Offloads":10.0, "RunMetres":1878.4, "AllRuns":207.5, "Tackles":339.5, "MissedTackles":29.9, "IneffTackles":15.2, "Errors":10.7, "KickMetres":621.9},
+    "Rabbitohs":    {"played":12, "Points":28.2, "Tries":5.0, "Linebreaks":6.3, "TackleBreaks":30.9, "PCM":513.4, "TryAssists":4.1, "Offloads":7.4, "RunMetres":1695.1, "AllRuns":186.1, "Tackles":307.4, "MissedTackles":33.0, "IneffTackles":15.8, "Errors":11.3, "KickMetres":594.1},
+    "Raiders":      {"played":13, "Points":19.2, "Tries":3.4, "Linebreaks":4.6, "TackleBreaks":37.5, "PCM":546.2, "TryAssists":2.7, "Offloads":11.2, "RunMetres":1687.0, "AllRuns":180.1, "Tackles":360.1, "MissedTackles":33.6, "IneffTackles":15.2, "Errors":10.8, "KickMetres":591.6},
+    "Roosters":     {"played":12, "Points":26.9, "Tries":4.8, "Linebreaks":4.8, "TackleBreaks":36.4, "PCM":620.5, "TryAssists":4.3, "Offloads":10.3, "RunMetres":1811.9, "AllRuns":187.3, "Tackles":332.3, "MissedTackles":27.3, "IneffTackles":14.3, "Errors":13.3, "KickMetres":520.4},
+    "Sea Eagles":   {"played":13, "Points":28.2, "Tries":4.9, "Linebreaks":5.7, "TackleBreaks":29.9, "PCM":569.8, "TryAssists":4.2, "Offloads":8.5, "RunMetres":1751.4, "AllRuns":186.2, "Tackles":318.4, "MissedTackles":30.3, "IneffTackles":17.5, "Errors":11.5, "KickMetres":610.6},
+    "Sharks":       {"played":12, "Points":29.7, "Tries":5.2, "Linebreaks":5.4, "TackleBreaks":29.5, "PCM":541.1, "TryAssists":4.5, "Offloads":10.4, "RunMetres":1657.7, "AllRuns":180.5, "Tackles":341.7, "MissedTackles":30.8, "IneffTackles":15.0, "Errors":11.3, "KickMetres":637.6},
+    "Storm":        {"played":14, "Points":24.7, "Tries":4.4, "Linebreaks":5.5, "TackleBreaks":35.4, "PCM":538.0, "TryAssists":3.2, "Offloads":9.1, "RunMetres":1649.1, "AllRuns":181.7, "Tackles":338.8, "MissedTackles":33.1, "IneffTackles":15.6, "Errors":9.9, "KickMetres":579.8},
+    "Titans":       {"played":12, "Points":18.3, "Tries":3.2, "Linebreaks":4.5, "TackleBreaks":29.3, "PCM":553.6, "TryAssists":2.3, "Offloads":10.8, "RunMetres":1654.6, "AllRuns":179.6, "Tackles":351.0, "MissedTackles":32.4, "IneffTackles":14.4, "Errors":13.1, "KickMetres":590.0},
+    "Warriors":     {"played":12, "Points":30.7, "Tries":5.3, "Linebreaks":5.8, "TackleBreaks":33.4, "PCM":563.2, "TryAssists":4.3, "Offloads":8.1, "RunMetres":1699.7, "AllRuns":187.6, "Tackles":326.5, "MissedTackles":32.9, "IneffTackles":15.3, "Errors":9.9, "KickMetres":649.6},
+    "Wests Tigers": {"played":12, "Points":22.9, "Tries":4.0, "Linebreaks":5.0, "TackleBreaks":36.1, "PCM":551.8, "TryAssists":3.8, "Offloads":13.9, "RunMetres":1684.0, "AllRuns":187.8, "Tackles":348.3, "MissedTackles":32.8, "IneffTackles":15.3, "Errors":11.7, "KickMetres":557.6},
 }
 
-# (name, position, games_played, [per-game stats] or None for estimated)
-LINEUPS = {
-    "Rabbitohs": [
-        ("Jye Gray", "Fullback", 0, None),
-        ("Alex Johnston", "Winger", 11, [0,0,0,0,0,1.9,0.5,0,5.5,1.4,0,0,0,0]),
-        ("Latrell Siegwalt", "Centre", 0, None),
-        ("Tallis Duncan", "Centre", 12, [0,0,0,2.9,0,0.6,0,0,0,0,0,0,0,1.3]),
-        ("Edward Kosi", "Winger", 0, None),
-        ("Cody Walker", "Five-Eighth", 12, [0,0,2.7,0,0,0,0.8,0,0,0,1.3,0,127.9,1.4]),
-        ("Ashton Ward", "Halfback", 5, [0,0,0,0,0,0,0,0,0,0,0,0,355.4,0]),
-        ("Tevita Tatola", "Prop", 0, None),
-        ("Brandon Smith", "Hooker", 4, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Keaon Koloamatangi", "Prop", 12, [158.9,0,0,0,53.6,0,0,0,0,0,0,16.8,0,0]),
-        ("David Fifita", "2nd Row", 0, None),
-        ("Euan Aitken", "2nd Row", 0, None),
-        ("Lachlan Hubner", "Lock", 11, [0,0,3.0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Bronson Garlick", "Interchange", 10, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Jamie Humphreys", "Interchange", 7, [0,0,0,0,0,0,0,0,0,0,0,0,277.3,0]),
-        ("Jayden Sullivan", "Interchange", 0, None),
-        ("John Radel", "Interchange", 0, None),
-    ],
-    "Broncos": [
-        ("Hayze Perham", "Fullback", 0, None),
-        ("Josiah Karapani", "Winger", 12, [155.2,0,0,0,46.2,0.8,0,0,0,0,0,17.8,0,0]),
-        ("Antonio Verhoeven", "Centre", 0, None),
-        ("Grant Anderson", "Centre", 0, None),
-        ("Jesse Arthars", "Winger", 0, None),
-        ("Thomas Duffy", "Five-Eighth", 7, [0,0,0,0,0,0,0,0,0,0,0,0,277.3,0]),
-        ("Adam Reynolds", "Halfback", 10, [0,0,0,0,0,0,0.5,0,7.0,0,0,0,364.8,0]),
-        ("Preston Riki", "Prop", 0, None),
-        ("Cory Paix", "Hooker", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Jack Gosiewski", "Prop", 0, None),
-        ("Brendan Piakura", "2nd Row", 14, [114.4,0,0,0,39.6,0,0,0,0,0,0,12.6,0,0]),
-        ("Jordan Riki", "2nd Row", 12, [0,0,0,0,0,0,0,14,0,0,0,0,0,0]),
-        ("Xavier Willison", "Lock", 12, [0,0,36,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Ben Talty", "Interchange", 0, None),
-        ("Aublix Tawha", "Interchange", 0, None),
-        ("Tyson Smoothy", "Interchange", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Ben Hunt", "Interchange", 9, [0,0,0,0,0,0,0,0,0,0,0,0,132.1,0]),
-    ],
-    "Dolphins": [
-        ("Trai Fuller", "Fullback", 0, None),
-        ("Jamayne Isaako", "Winger", 12, [159.3,0,0,0,48.0,1.1,0,0,12.5,0.9,0,16.7,0,0]),
-        ("Jack Bostock", "Centre", 0, None),
-        ("Herbie Farnworth", "Centre", 11, [166.0,0,0,7.2,58.6,0,0,4.0,0,0,0,17.6,0,0]),
-        ("Tevita Naufahu", "Winger", 0, None),
-        ("Kodi Nikorima", "Five-Eighth", 9, [0,0,0,0,0,0,0.7,0,0,0,0,0,0,0]),
-        ("Isaiya Katoa", "Halfback", 12, [0,0,3.3,0,0,0,0.8,0,0,0,0,0,473.8,1.4]),
-        ("Felise Kaufusi", "Prop", 0, None),
-        ("Jeremy Marshall-King", "Hooker", 4, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Francis Molo", "Prop", 0, None),
-        ("Connelly Lemuelu", "2nd Row", 12, [0,35.0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Oryn Keeley", "2nd Row", 0, None),
-        ("Morgan Knowles", "Lock", 11, [0,34.6,3.5,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Bradley Schneider", "Interchange", 7, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Kurt Donoghoe", "Interchange", 0, None),
-        ("Tom Gilbert", "Interchange", 12, [0,33.3,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Ray Stone", "Interchange", 0, None),
-    ],
-    "Roosters": [
-        ("Cody Ramsey", "Fullback", 0, None),
-        ("Billy Smith", "Winger", 0, None),
-        ("Reece Foley", "Centre", 0, None),
-        ("Egan Butcher", "Centre", 0, None),
-        ("Tommy Talau", "Winger", 0, None),
-        ("Hugo Savala", "Five-Eighth", 0, None),
-        ("Daly Cherry-Evans", "Halfback", 12, [0,0,0,0,0,0,0.5,0,0,0,0,0,310.3,0]),
-        ("Spencer Leniu", "Prop", 12, [0,0,0,0,0,0,0,18,0,0,0,0,0,0]),
-        ("Brandon Smith", "Hooker", 4, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Naufahu Whyte", "Prop", 12, [161.6,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Nat Butcher", "2nd Row", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Terrell May", "2nd Row", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Victor Radley", "Lock", 12, [0,37.4,33,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Connor Watson", "Interchange", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Fetalaiga Pauga", "Interchange", 0, None),
-        ("Liam Martin", "Interchange", 0, None),
-        ("Siua Wong", "Interchange", 10, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-    ],
-    "Warriors": [
-        ("Taine Tuaupiki", "Fullback", 10, [173.8,0,0,5.4,0,0,0,0,0,0,0,18.5,0,0]),
-        ("Dallin Watene-Zelezniak", "Winger", 12, [0,0,0,0,0,0.8,0,1.1,4.7,1.2,1.5,0,0,0]),
-        ("Ali Leiataua", "Centre", 0, None),
-        ("Adam Pompey", "Centre", 0, None),
-        ("Alofiana Khan-Pereira", "Winger", 7, [0,0,0,0,0,1.3,0,0,5.1,1.3,0,0,0,0]),
-        ("Chanel Harris-Tavita", "Five-Eighth", 9, [0,0,0,0,0,0,0.8,0,0,0,0,0,207.0,1.8]),
-        ("Te Maire Martin", "Halfback", 3, [0,0,0,0,0,0,0,0,0,0,0,0,254.0,0]),
-        ("Tanner Stowers-Smith", "Prop", 0, None),
-        ("Wayde Egan", "Hooker", 12, [0,0,0,0,0,0,0.5,0,0,0,0,0,0,0]),
-        ("Jackson Ford", "Prop", 12, [174.4,42.8,2.9,0,72.8,0,0,0,0,0,0,18.7,0,1.7]),
-        ("Marata Niukore", "2nd Row", 0, None),
-        ("Jacob Laban", "2nd Row", 0, None),
-        ("Erin Clark", "Lock", 12, [138.3,0,0,0,50.6,0,0,1.4,0,0,0,14.6,0,0]),
-        ("Makaia Tafua", "Interchange", 0, None),
-        ("Eddie Ieremia-Toeava", "Interchange", 0, None),
-        ("Demitric Vaimauga", "Interchange", 0, None),
-        ("Kayliss Fatialofa", "Interchange", 0, None),
-    ],
-    "Sharks": [
-        ("William Kennedy", "Fullback", 12, [146.8,0,0,3.9,0,0,0.7,0,0,0.5,0,15.1,0,0]),
-        ("Samuel Stonestreet", "Winger", 12, [141.6,0,0,0,0,0,0,0,0,0,1.3,16.5,0,0]),
-        ("Jesse Ramien", "Centre", 0, None),
-        ("Siosifa Talakai", "Centre", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Ronaldo Mulitalo", "Winger", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Nicholas Hynes", "Five-Eighth", 10, [0,0,0,0,0,0,0.6,0,10.6,0,0,0,477.5,0]),
-        ("Daniel Atkinson", "Halfback", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Oregon Kaufusi", "Prop", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Blayke Brailey", "Hooker", 12, [0,39.8,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Toby Rudolf", "Prop", 13, [0,0,0,0,0,0,0,17,0,0,0,0,0,0]),
-        ("Briton Nikora", "2nd Row", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Teig Wilton", "2nd Row", 12, [0,30.9,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Cameron McInnes", "Lock", 12, [0,42.0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Jack Bird", "Interchange", 0, None),
-        ("Thomas Hazelton", "Interchange", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Jayden Berrell", "Interchange", 0, None),
-        ("Royce Hunt", "Interchange", 12, [0,0,0,0,0,0,0,14,0,0,0,0,0,0]),
-    ],
-    "Eels": [
-        ("Isaiah Iongi", "Fullback", 0, None),
-        ("Brian Kelly", "Winger", 11, [159.7,0,0,3.3,56.3,0,0,1.6,0,0,1.5,18.2,0,0]),
-        ("Jordan Samrani", "Centre", 0, None),
-        ("Sean Russell", "Centre", 0, None),
-        ("Josh Addo-Carr", "Winger", 12, [0,0,0,3.2,0,0.6,0,0,0,0.5,0,0,0,0]),
-        ("Joash Papalii", "Five-Eighth", 11, [0,0,0,0,0,0,0,0,0,0,1.5,0,0,0]),
-        ("Ronald Volkman", "Halfback", 8, [0,0,4.1,0,0,0,0.8,0,0,0,0,0,225.1,0]),
-        ("Luca Moretti", "Prop", 0, None),
-        ("Tallyn Da Silva", "Hooker", 13, [0,0,3.6,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Jack Williams", "Prop", 13, [0,40.5,3.3,0,0,0,0,0,0,0,0,0,0,2.0]),
-        ("Kelma Tuilagi", "2nd Row", 10, [0,0,3.4,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Kitione Kautoga", "2nd Row", 8, [0,0,0,0,0,0,0,1.9,0,0,0,0,0,0]),
-        ("Jack De Belin", "Lock", 0, None),
-        ("Dylan Walker", "Interchange", 0, None),
-        ("Sam Tuivaiti", "Interchange", 0, None),
-        ("Teancum Brown", "Interchange", 0, None),
-        ("Harrison Edwards", "Interchange", 0, None),
-    ],
-    "Raiders": [
-        ("Kaeo Weekes", "Fullback", 13, [168.2,0,0,5.5,0,0.6,0,0,2.5,0.6,0,14.6,0,0]),
-        ("Jed Stuart", "Winger", 0, None),
-        ("Sebastian Kris", "Centre", 11, [0,0,0,0,0,0.6,0,1.2,0,0,0,0,0,0]),
-        ("Matthew Timoko", "Centre", 0, None),
-        ("Xavier Savage", "Winger", 0, None),
-        ("Ethan Sanders", "Halfback", 13, [0,0,0,0,0,0,0,0,6.2,0,0,0,258.8,0]),
-        ("Jamal Fogarty", "Five-Eighth", 11, [0,0,0,0,0,0,0,0,7.4,0,0,0,0,0]),
-        ("Joseph Tapine", "Prop", 13, [129.6,32.5,0,0,50.8,0,0,2.2,0,0,0,14.5,0,0]),
-        ("Danny Levi", "Hooker", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Ata Mariota", "Prop", 0, None),
-        ("Hudson Young", "2nd Row", 13, [0,30.2,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Savelio Tamale", "2nd Row", 12, [176.5,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Corey Harawira-Naera", "Lock", 0, None),
-        ("Trey Mooney", "Interchange", 11, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Pasami Saulo", "Interchange", 10, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Emre Guler", "Interchange", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Chevy Stewart", "Interchange", 0, None),
-    ],
-    "Wests Tigers": [
-        ("Jahream Bula", "Fullback", 12, [181.2,0,0,0,0,0.8,0,0,0,0.6,0,19.3,0,0]),
-        ("Charlie Staines", "Winger", 12, [144.1,0,0,0,0,0,0,0,0,0,0,16.2,0,0]),
-        ("Adam Doueihi", "Centre", 11, [0,0,0,0,0,0,0.5,0,0,0,0,0,0,0]),
-        ("Justin Olam", "Centre", 12, [135.5,0,0,0,0,0,0,0,0,0,0,15.1,0,0]),
-        ("Sunia Turuva", "Winger", 10, [0,0,0,2.7,0,0.7,0,0,2.2,0.6,0,0,0,0]),
-        ("Lachlan Galvin", "Five-Eighth", 12, [0,0,36,0,0,0,0.8,0,0,0,0,0,358.2,0]),
-        ("Jayden Sullivan", "Halfback", 0, None),
-        ("Stefano Utoikamanu", "Prop", 12, [151.2,0,0,0,52.0,0,0,0,0,0,0,16.4,0,0]),
-        ("Apisai Koroisau", "Hooker", 12, [0,0,0,0,0,0,0.5,0,0,0,0,0,0,0]),
-        ("Alex Seyfarth", "Prop", 12, [0,33.0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("John Bateman", "2nd Row", 11, [0,0,30,0,0,0,0,14,0,0,0,0,0,0]),
-        ("Samuela Fainu", "2nd Row", 11, [0,36.1,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Fonua Pole", "Lock", 12, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Terrell Kalokalo", "Interchange", 0, None),
-        ("Kit Laulilii", "Interchange", 0, None),
-        ("Jordan Miller", "Interchange", 0, None),
-        ("Junior Tupou", "Interchange", 0, None),
-    ],
-    "Titans": [
-        ("Jayden Campbell", "Fullback", 10, [0,0,0,0,0,0,0,0,8.2,0,0,0,0,0]),
-        ("Keano Kini", "Winger", 12, [187.0,0,0,0,0,0.8,0,0,0,0.8,0,20.8,0,0]),
-        ("Phillip Sami", "Centre", 12, [214.6,0,0,0,0,0.8,0,0,0,0,0,18.9,0,0]),
-        ("Brian Kelly", "Centre", 11, [159.7,0,0,3.3,56.3,0,0,1.6,0,0,1.5,18.2,0,0]),
-        ("Alofiana Khan-Pereira", "Winger", 7, [0,0,0,0,0,1.3,0,0,5.1,1.3,0,0,0,0]),
-        ("Kieran Foran", "Five-Eighth", 11, [0,0,0,0,0,0,0.5,0,0,0,0,0,0,0]),
-        ("Tanah Boyd", "Halfback", 10, [0,0,0,0,0,0,0,0,9.2,0,0,0,495.1,0]),
-        ("Moeaki Fotuaika", "Prop", 11, [148.7,0,0,0,0,0,0,0,0,0,0,16.9,0,0]),
-        ("Sam Verrills", "Hooker", 11, [0,0,0,0,0,0,0.5,0,0,0,0,0,0,0]),
-        ("Jaimin Jolliffe", "Prop", 0, None),
-        ("David Fifita", "2nd Row", 0, None),
-        ("Beau Fermor", "2nd Row", 10, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Chris Randall", "Lock", 10, [0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
-        ("Isaac Liu", "Interchange", 0, None),
-        ("Erin Clark", "Interchange", 12, [138.3,0,0,0,50.6,0,0,1.4,0,0,0,14.6,0,0]),
-        ("Jaylan De Groot", "Interchange", 0, None),
-        ("Klese Haas", "Interchange", 0, None),
-    ],
-}
-
-# Bye teams (Rd 15): use position-default lineups for backtesting team strength
-BYE_TEAM_TEMPLATE = [
-    ("FB","Fullback",0,None),("W1","Winger",0,None),("C1","Centre",0,None),
-    ("C2","Centre",0,None),("W2","Winger",0,None),("FE","Five-Eighth",0,None),
-    ("HB","Halfback",0,None),("P1","Prop",0,None),("HK","Hooker",0,None),
-    ("P2","Prop",0,None),("2R1","2nd Row",0,None),("2R2","2nd Row",0,None),
-    ("LK","Lock",0,None),("I1","Interchange",0,None),("I2","Interchange",0,None),
-    ("I3","Interchange",0,None),("I4","Interchange",0,None),
-]
-for bye_team in ["Storm","Panthers","Sea Eagles","Bulldogs","Knights","Cowboys","Dragons"]:
-    if bye_team not in LINEUPS:
-        LINEUPS[bye_team] = BYE_TEAM_TEMPLATE
-
-# ── Team Season Records (all 17 teams, through Round 14) ──────────────────
 SEASON = {
     "Rabbitohs": {"W":6,"L":6,"P":12}, "Broncos": {"W":5,"L":8,"P":13},
     "Dolphins": {"W":7,"L":5,"P":12}, "Roosters": {"W":8,"L":4,"P":12},
@@ -290,7 +77,6 @@ SEASON = {
     "Dragons": {"W":3,"L":10,"P":13},
 }
 
-# ── Completed 2026 Results (Rounds 1-14, 108 matches) ────────────────────
 RESULTS_2026 = [
     (1,"Knights","Cowboys",28,18),(1,"Bulldogs","Dragons",15,14),(1,"Storm","Eels",52,4),
     (1,"Warriors","Roosters",42,18),(1,"Broncos","Panthers",0,26),(1,"Sharks","Titans",50,10),
@@ -354,97 +140,103 @@ MATCHES = [
      "H_Outs":"A. Doueihi (injury)","A_Outs":"J. Fifita, T. Fa'asuamaleaui (QLD Origin). Two best forwards gone"},
 ]
 
+# =============================================================================
+# RECENT FORM: Last 5 games scoring from actual results
+# Weight recent performance more heavily than season averages
+# =============================================================================
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODEL: Compute lineup-specific team strength from individual player stats
-# ═══════════════════════════════════════════════════════════════════════════════
+def compute_recent_form(results, n=5):
+    team_games = {}
+    for rd, home, away, hs, as_ in results:
+        for team, scored, conceded in [(home, hs, as_), (away, as_, hs)]:
+            if team not in team_games:
+                team_games[team] = []
+            team_games[team].append({"rd": rd, "scored": scored, "conceded": conceded})
 
-def get_player_stats(player_tuple):
-    """Return per-game stats for a player, using position defaults if no data."""
-    name, pos, gp, stats = player_tuple
-    if stats is not None:
-        s = list(stats)
-        defaults = POS_DEFAULTS.get(pos, POS_DEFAULTS["Interchange"])
-        for i in range(len(s)):
-            if s[i] == 0:
-                s[i] = defaults[i] * 0.5
-        return s, True
-    return POS_DEFAULTS.get(pos, POS_DEFAULTS["Interchange"]), False
+    recent = {}
+    for team, games in team_games.items():
+        games.sort(key=lambda g: g["rd"])
+        last_n = games[-n:]
+        season_scored = sum(g["scored"] for g in games) / len(games)
+        season_conceded = sum(g["conceded"] for g in games) / len(games)
+        recent_scored = sum(g["scored"] for g in last_n) / len(last_n)
+        recent_conceded = sum(g["conceded"] for g in last_n) / len(last_n)
 
-def compute_team_strength(team_name):
-    """Sum individual player per-game stats to get lineup-specific team strength."""
-    lineup = LINEUPS[team_name]
-    totals = [0.0] * len(STAT_COLS)
-    known_count = 0
-    player_details = []
+        atk_trend = (recent_scored / max(season_scored, 1)) - 1.0
+        def_trend = (season_conceded / max(recent_conceded, 1)) - 1.0
 
-    for player in lineup:
-        stats, is_known = get_player_stats(player)
-        for i, v in enumerate(stats):
-            totals[i] += v
-        if is_known:
-            known_count += 1
-        player_details.append({
-            "name": player[0], "pos": player[1], "gp": player[2],
-            "stats": stats, "known": is_known
-        })
+        recent[team] = {
+            "season_scored": round(season_scored, 1),
+            "season_conceded": round(season_conceded, 1),
+            "recent_scored": round(recent_scored, 1),
+            "recent_conceded": round(recent_conceded, 1),
+            "atk_trend": round(atk_trend, 3),
+            "def_trend": round(def_trend, 3),
+        }
+    return recent
 
-    return {
-        "totals": totals,
-        "known": known_count,
-        "total": len(lineup),
-        "players": player_details,
-    }
+RECENT_FORM = compute_recent_form(RESULTS_2026, n=5)
 
-def zscore_val(val, mean, std):
-    if std == 0:
-        return 0
-    return (val - mean) / std
+# =============================================================================
+# Z-SCORE MODEL: Team strength from NRL.com aggregate stats + recent form
+# =============================================================================
 
-# Compute all team strengths
-team_strengths = {}
-for team in LINEUPS:
-    team_strengths[team] = compute_team_strength(team)
+ATK_STATS = ["RunMetres", "TackleBreaks", "PCM", "Linebreaks", "TryAssists", "Offloads", "Points"]
+ATK_WEIGHTS = [1.0, 1.0, 1.0, 1.5, 1.2, 1.0, 1.0]
+DEF_STATS_POS = ["Tackles"]
+DEF_STATS_NEG = ["MissedTackles", "IneffTackles", "Errors"]
 
-# Get means and stds across the 10 playing teams for z-scoring
-stat_values = {col: [] for col in STAT_COLS}
-for team, data in team_strengths.items():
-    for i, col in enumerate(STAT_COLS):
-        stat_values[col].append(data["totals"][i])
+def zscore(val, mean, std):
+    return (val - mean) / std if std > 0 else 0
 
-stat_means = {col: sum(vals)/len(vals) for col, vals in stat_values.items()}
-stat_stds = {col: (sum((v - stat_means[col])**2 for v in vals) / len(vals)) ** 0.5
-             for col, vals in stat_values.items()}
+def compute_team_zscores():
+    teams = list(TEAM_STATS.keys())
+    stat_means = {}
+    stat_stds = {}
 
-# Attack z-score: RunM + TackleBreaks + PCM + Linebreaks*1.5 + TryAssists*1.2 + Offloads + Points
-# Defence z-score: Tackles (positive) + MissedT (negative) + IneffTackles (negative) + Errors (negative)
-for team, data in team_strengths.items():
-    t = data["totals"]
-    atk_z = (
-        zscore_val(t[0], stat_means["RunM"], stat_stds["RunM"])
-        + zscore_val(t[3], stat_means["TackleBreaks"], stat_stds["TackleBreaks"])
-        + zscore_val(t[4], stat_means["PCM"], stat_stds["PCM"])
-        + zscore_val(t[5], stat_means["Linebreaks"], stat_stds["Linebreaks"]) * 1.5
-        + zscore_val(t[6], stat_means["TryAssists"], stat_stds["TryAssists"]) * 1.2
-        + zscore_val(t[7], stat_means["Offloads"], stat_stds["Offloads"])
-        + zscore_val(t[8], stat_means["Points"], stat_stds["Points"])
-    ) / 7.7
-    def_z = (
-        zscore_val(t[1], stat_means["Tackles"], stat_stds["Tackles"])
-        + zscore_val(-t[2], -stat_means["MissedT"], stat_stds["MissedT"])
-        + zscore_val(-t[13], -stat_means["IneffTackles"], stat_stds["IneffTackles"])
-        + zscore_val(-t[10], -stat_means["Errors"], stat_stds["Errors"])
-    ) / 4.0
-    data["atk_z"] = round(atk_z, 3)
-    data["def_z"] = round(def_z, 3)
+    all_stats = ATK_STATS + DEF_STATS_POS + DEF_STATS_NEG
+    for stat in all_stats:
+        vals = [TEAM_STATS[t][stat] for t in teams]
+        mean = sum(vals) / len(vals)
+        std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+        stat_means[stat] = mean
+        stat_stds[stat] = std
 
-# Rank teams
-atk_sorted = sorted(team_strengths.items(), key=lambda x: x[1]["atk_z"], reverse=True)
-def_sorted = sorted(team_strengths.items(), key=lambda x: x[1]["def_z"], reverse=True)
-for rank, (team, _) in enumerate(atk_sorted, 1):
-    team_strengths[team]["atk_rank"] = rank
-for rank, (team, _) in enumerate(def_sorted, 1):
-    team_strengths[team]["def_rank"] = rank
+    strengths = {}
+    for team in teams:
+        s = TEAM_STATS[team]
+
+        atk_z_raw = sum(
+            zscore(s[stat], stat_means[stat], stat_stds[stat]) * w
+            for stat, w in zip(ATK_STATS, ATK_WEIGHTS)
+        ) / sum(ATK_WEIGHTS)
+
+        def_z_pos = sum(zscore(s[stat], stat_means[stat], stat_stds[stat]) for stat in DEF_STATS_POS)
+        def_z_neg = sum(zscore(-s[stat], -stat_means[stat], stat_stds[stat]) for stat in DEF_STATS_NEG)
+        def_z_raw = (def_z_pos + def_z_neg) / (len(DEF_STATS_POS) + len(DEF_STATS_NEG))
+
+        rf = RECENT_FORM.get(team, {"atk_trend": 0, "def_trend": 0})
+        atk_z = atk_z_raw * (1 + 0.3 * rf["atk_trend"])
+        def_z = def_z_raw * (1 + 0.3 * rf["def_trend"])
+
+        strengths[team] = {
+            "atk_z": round(atk_z, 3),
+            "def_z": round(def_z, 3),
+            "atk_z_raw": round(atk_z_raw, 3),
+            "def_z_raw": round(def_z_raw, 3),
+            "played": s["played"],
+        }
+
+    atk_sorted = sorted(strengths.items(), key=lambda x: x[1]["atk_z"], reverse=True)
+    def_sorted = sorted(strengths.items(), key=lambda x: x[1]["def_z"], reverse=True)
+    for rank, (team, _) in enumerate(atk_sorted, 1):
+        strengths[team]["atk_rank"] = rank
+    for rank, (team, _) in enumerate(def_sorted, 1):
+        strengths[team]["def_rank"] = rank
+
+    return strengths, stat_means, stat_stds
+
+team_strengths, stat_means, stat_stds = compute_team_zscores()
 
 
 def calculate_match(m):
@@ -462,16 +254,13 @@ def calculate_match(m):
 
     ref_edge = m["Ref_Boost"] / 200
 
-    known_pct = (h["known"] + a["known"]) / (h["total"] + a["total"])
-    confidence = 0.6 + 0.4 * known_pct
-
     score = (
         attack_w * atk_edge
         + defence_w * def_edge
         + form_w * form_edge
         + home_w * 0.15
         + context_w * ref_edge
-    ) * confidence
+    )
 
     prob = 1 / (1 + exp(-score * 2.0))
     prob = max(0.25, min(0.82, prob))
@@ -520,16 +309,14 @@ for m in MATCHES:
         "A_Atk_z": a["atk_z"], "A_Def_z": a["def_z"],
         "H_Atk_rank": h["atk_rank"], "H_Def_rank": h["def_rank"],
         "A_Atk_rank": a["atk_rank"], "A_Def_rank": a["def_rank"],
-        "H_Known": h["known"], "A_Known": a["known"],
         "H_Outs": m["H_Outs"], "A_Outs": m["A_Outs"],
     })
 
 df = pd.DataFrame(results)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# BACKTESTING ENGINE: Self-tuning from Rounds 1-14 actual results
-# Uses player-stat team strengths + evolving form to find optimal weights
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# BACKTESTING: Self-tuning from Rounds 1-14 actual results
+# =============================================================================
 
 def backtest_model(aw, dw, fw, hw, cw, scale, home_const):
     records = {t: {"W": 0, "L": 0, "P": 0} for t in SEASON}
@@ -561,15 +348,11 @@ def backtest_model(aw, dw, fw, hw, cw, scale, home_const):
             a_pct = 0.5
         form_e = h_pct - a_pct
 
-        known_pct = (h["known"] + a["known"]) / (h["total"] + a["total"])
-        conf = 0.6 + 0.4 * known_pct
-
-        sc = (aw * atk_e + dw * def_e + fw * form_e + hw * home_const) * conf
+        sc = (aw * atk_e + dw * def_e + fw * form_e + hw * home_const)
         prob = 1 / (1 + exp(-sc * scale))
         prob = max(0.25, min(0.82, prob))
 
         predicted = home if prob >= 0.5 else away
-        win_prob = prob if predicted == home else 1 - prob
 
         if predicted == winner:
             correct += 1
@@ -597,11 +380,11 @@ def optimize_weights():
     best_params = None
     best_brier = 1.0
 
-    for aw in [0.30, 0.35, 0.40, 0.45, 0.50]:
-        for dw in [0.15, 0.20, 0.25, 0.30]:
+    for aw in [0.25, 0.30, 0.35, 0.40, 0.45, 0.50]:
+        for dw in [0.15, 0.20, 0.25, 0.30, 0.35]:
             for fw in [0.10, 0.15, 0.20, 0.25, 0.30]:
                 for hw in [0.05, 0.08, 0.10, 0.12, 0.15]:
-                    for scale in [1.2, 1.5, 1.8, 2.0, 2.4]:
+                    for scale in [1.2, 1.5, 1.8, 2.0, 2.4, 2.8]:
                         for hc in [0.10, 0.15, 0.20, 0.30]:
                             acc, brier, c, t, rr = backtest_model(aw, dw, fw, hw, 0.0, scale, hc)
                             if acc > best_acc or (acc == best_acc and brier < best_brier):
@@ -616,12 +399,12 @@ bt_accuracy, bt_brier, bt_correct, bt_total, bt_rounds = backtest_model(
     attack_w, defence_w, form_w, home_w, context_w, 2.0, 0.15
 )
 
-# ═══════════════════════  TABS  ════════════════════════════════════════════════
-tab_dash, tab_lineups, tab_detail, tab_power, tab_backtest, tab_method = st.tabs(
-    ["Dashboard", "Lineup Analysis", "Game Breakdowns", "Power Rankings", "Backtesting", "Methodology"]
+# =========================  TABS  =============================================
+tab_dash, tab_stats, tab_detail, tab_power, tab_backtest, tab_method = st.tabs(
+    ["Dashboard", "Team Stats", "Game Breakdowns", "Power Rankings", "Backtesting", "Methodology"]
 )
 
-# ═══════════════════════  DASHBOARD  ═══════════════════════════════════════════
+# =========================  DASHBOARD  ========================================
 with tab_dash:
     actionable = df[df["Strength"].isin(["STRONG", "CONFIDENT"])]
     value_count = df[df["Has_Value"]].shape[0]
@@ -629,7 +412,7 @@ with tab_dash:
     c1.metric("Round 15 Games", f"{len(df)} (Origin split)")
     c2.metric("Strong/Confident Picks", len(actionable))
     c3.metric("Market Value Flags", value_count)
-    c4.metric("Teams on Bye", "7")
+    c4.metric("Backtest Accuracy", f"{bt_accuracy:.0%}")
     st.markdown("---")
 
     st.subheader("Round 15 Predictions")
@@ -693,8 +476,8 @@ with tab_dash:
                 <span>Market: <b style="color:#e5e7eb">${mkt:.2f}</b></span>
                 <span>Edge: <b style="color:{'#4ade80' if r['Best_Edge'] >= 3 else '#9ca3af'}">{r['Best_Edge']:+.1f}pp</b></span>
                 <span>Ref: <b style="color:#c084fc">{r['Ref_Boost']:+.1f}pp</b></span>
-                <span>{r['Home']} Atk#{r['H_Atk_rank']} Def#{r['H_Def_rank']} ({r['H_Known']}/17)</span>
-                <span>{r['Away']} Atk#{r['A_Atk_rank']} Def#{r['A_Def_rank']} ({r['A_Known']}/17)</span>
+                <span>{r['Home']} Atk#{r['H_Atk_rank']} Def#{r['H_Def_rank']}</span>
+                <span>{r['Away']} Atk#{r['A_Atk_rank']} Def#{r['A_Def_rank']}</span>
             </div>
             <div style="color:#6b7280; font-size:0.8rem; margin-top:6px">Outs: {r['H_Outs']} | {r['A_Outs']}</div>
         </div>""", unsafe_allow_html=True)
@@ -722,10 +505,10 @@ with tab_dash:
     st.download_button("Export CSV", buf.getvalue(), "nrl_r15_moneyball.csv", "text/csv")
 
 
-# ═══════════════════════  LINEUP ANALYSIS  ═════════════════════════════════════
-with tab_lineups:
-    st.subheader("Lineup-Based Team Strength")
-    st.caption("Individual player stats from nrl.com/stats (top-50 leaderboards). Players in grey use position-based estimates.")
+# =========================  TEAM STATS  =======================================
+with tab_stats:
+    st.subheader("NRL.com Team Stats (Per-Game Averages)")
+    st.caption("Real team aggregate stats from nrl.com/stats/teams. All 17 teams, 14 statistical categories. Recent form adjusts z-scores by last-5-game scoring trends.")
 
     for m in MATCHES:
         with st.expander(f"{m['Home']} vs {m['Away']} -- {m['Venue']}"):
@@ -734,73 +517,94 @@ with tab_lineups:
             for col, team_name in [(col_h, m["Home"]), (col_a, m["Away"])]:
                 with col:
                     ts = team_strengths[team_name]
+                    rf = RECENT_FORM[team_name]
+                    s = SEASON[team_name]
                     st.markdown(f"### {team_name}")
-                    st.markdown(f"**Lineup strength:** Atk z={ts['atk_z']:+.2f} (#{ts['atk_rank']}) | Def z={ts['def_z']:+.2f} (#{ts['def_rank']})")
-                    st.markdown(f"**Verified players:** {ts['known']}/17 from NRL.com leaderboards")
+                    st.markdown(f"**Record:** {s['W']}W-{s['L']}L ({s['W']/s['P']*100:.0f}%)")
+                    st.markdown(f"**Attack:** z={ts['atk_z']:+.2f} (#{ts['atk_rank']}) | raw={ts['atk_z_raw']:+.2f}")
+                    st.markdown(f"**Defence:** z={ts['def_z']:+.2f} (#{ts['def_rank']}) | raw={ts['def_z_raw']:+.2f}")
+                    st.markdown(f"**Last 5 avg:** {rf['recent_scored']} scored, {rf['recent_conceded']} conceded")
+                    st.markdown(f"**Season avg:** {rf['season_scored']} scored, {rf['season_conceded']} conceded")
 
-                    rows = []
-                    for p in ts["players"]:
-                        s = p["stats"]
-                        tag = "" if p["known"] else " *"
-                        rows.append({
-                            "Player": p["name"] + tag,
-                            "Pos": p["pos"],
-                            "GP": p["gp"],
-                            "RunM": round(s[0], 1),
-                            "Tkl": round(s[1], 1),
-                            "TB": round(s[3], 1),
-                            "LB": round(s[5], 1),
-                            "TA": round(s[6], 1),
-                            "Pts": round(s[8], 1),
-                        })
-                    pdf = pd.DataFrame(rows)
-                    st.dataframe(pdf, hide_index=True, use_container_width=True, height=620)
+                    trend_icon = "↑" if rf["atk_trend"] > 0.05 else ("↓" if rf["atk_trend"] < -0.05 else "→")
+                    st.markdown(f"**Atk trend:** {trend_icon} {rf['atk_trend']:+.1%} | **Def trend:** {rf['def_trend']:+.1%}")
 
-            # Side-by-side stat comparison
-            h_ts = team_strengths[m["Home"]]
-            a_ts = team_strengths[m["Away"]]
-            compare_stats = ["RunM", "Tackles", "TackleBreaks", "PCM", "Linebreaks", "TryAssists", "Offloads", "Points"]
-            compare_idx = [0, 1, 3, 4, 5, 6, 7, 8]
-            h_vals = [h_ts["totals"][i] for i in compare_idx]
-            a_vals = [a_ts["totals"][i] for i in compare_idx]
+            compare_stats = ["Points", "Tries", "Linebreaks", "TackleBreaks", "PCM", "TryAssists", "Offloads", "RunMetres"]
+            h_vals = [TEAM_STATS[m["Home"]][s] for s in compare_stats]
+            a_vals = [TEAM_STATS[m["Away"]][s] for s in compare_stats]
 
             fig_cmp = go.Figure()
             fig_cmp.add_trace(go.Bar(name=m["Home"], x=compare_stats, y=h_vals, marker_color="#3b82f6"))
             fig_cmp.add_trace(go.Bar(name=m["Away"], x=compare_stats, y=a_vals, marker_color="#ef4444"))
             fig_cmp.update_layout(barmode="group", template="plotly_dark",
-                title=f"Lineup Strength Comparison (summed per-game stats)",
+                title="Per-Game Attack Stats Comparison",
                 plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=350,
                 margin=dict(l=40,r=20,t=40,b=40))
             st.plotly_chart(fig_cmp, use_container_width=True)
 
+            def_stats = ["Tackles", "MissedTackles", "IneffTackles", "Errors"]
+            h_dvals = [TEAM_STATS[m["Home"]][s] for s in def_stats]
+            a_dvals = [TEAM_STATS[m["Away"]][s] for s in def_stats]
 
-# ═══════════════════════  GAME BREAKDOWNS  ═══════════════════════════════════
+            fig_def = go.Figure()
+            fig_def.add_trace(go.Bar(name=m["Home"], x=def_stats, y=h_dvals, marker_color="#3b82f6"))
+            fig_def.add_trace(go.Bar(name=m["Away"], x=def_stats, y=a_dvals, marker_color="#ef4444"))
+            fig_def.update_layout(barmode="group", template="plotly_dark",
+                title="Per-Game Defence Stats Comparison",
+                plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14", height=300,
+                margin=dict(l=40,r=20,t=40,b=40))
+            st.plotly_chart(fig_def, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Full Team Stats Table")
+    ts_rows = []
+    for team in sorted(TEAM_STATS.keys()):
+        s = TEAM_STATS[team]
+        rf = RECENT_FORM.get(team, {})
+        ts_rows.append({
+            "Team": team, "P": s["played"],
+            "Pts/G": s["Points"], "Tries/G": s["Tries"], "LB/G": s["Linebreaks"],
+            "TB/G": s["TackleBreaks"], "PCM/G": s["PCM"], "RunM/G": s["RunMetres"],
+            "Tkl/G": s["Tackles"], "MissT/G": s["MissedTackles"],
+            "Err/G": s["Errors"],
+            "L5 Scored": rf.get("recent_scored", 0), "L5 Conceded": rf.get("recent_conceded", 0),
+        })
+    ts_df = pd.DataFrame(ts_rows)
+    st.dataframe(ts_df.style.format({
+        "Pts/G": "{:.1f}", "Tries/G": "{:.1f}", "LB/G": "{:.1f}", "TB/G": "{:.1f}",
+        "PCM/G": "{:.1f}", "RunM/G": "{:.0f}", "Tkl/G": "{:.1f}", "MissT/G": "{:.1f}",
+        "Err/G": "{:.1f}", "L5 Scored": "{:.1f}", "L5 Conceded": "{:.1f}",
+    }), use_container_width=True, hide_index=True)
+
+
+# =========================  GAME BREAKDOWNS  ==================================
 with tab_detail:
     st.subheader("Per-Game Model Breakdown")
     for _, g in df.iterrows():
-        icon = {"STRONG": "**", "VALUE": "+", "lean": ""}.get(g["Strength"], "")
-        with st.expander(f"{icon} {g['Match']}  |  {g['Bet']}  |  Edge {g['Edge_pp']:+.1f}pp"):
+        with st.expander(f"{g['Match']}  |  {g['Bet']}  |  Edge {g['Edge_pp']:+.1f}pp"):
             st.markdown(f"**{g['Venue']}** -- {g['Kickoff']} -- Ref: {g['Referee']} ({g['Ref_Boost']:+.1f}pp)")
             st.markdown("---")
 
             h_season = SEASON[g["Home"]]
             a_season = SEASON[g["Away"]]
+            h_rf = RECENT_FORM[g["Home"]]
+            a_rf = RECENT_FORM[g["Away"]]
 
             ca, cb = st.columns(2)
             with ca:
                 st.markdown(f"### {g['Home']} (Home)")
                 st.markdown(f"**Record:** {h_season['W']}W-{h_season['L']}L ({h_season['W']/h_season['P']*100:.0f}%)")
-                st.markdown(f"**Lineup attack:** #{g['H_Atk_rank']} (z={g['H_Atk_z']:+.2f})")
-                st.markdown(f"**Lineup defence:** #{g['H_Def_rank']} (z={g['H_Def_z']:+.2f})")
-                st.markdown(f"**Verified players:** {g['H_Known']}/17")
+                st.markdown(f"**Attack:** #{g['H_Atk_rank']} (z={g['H_Atk_z']:+.2f})")
+                st.markdown(f"**Defence:** #{g['H_Def_rank']} (z={g['H_Def_z']:+.2f})")
+                st.markdown(f"**Last 5:** {h_rf['recent_scored']} scored / {h_rf['recent_conceded']} conceded")
                 st.caption(f"Outs: {g['H_Outs']}")
 
             with cb:
                 st.markdown(f"### {g['Away']} (Away)")
                 st.markdown(f"**Record:** {a_season['W']}W-{a_season['L']}L ({a_season['W']/a_season['P']*100:.0f}%)")
-                st.markdown(f"**Lineup attack:** #{g['A_Atk_rank']} (z={g['A_Atk_z']:+.2f})")
-                st.markdown(f"**Lineup defence:** #{g['A_Def_rank']} (z={g['A_Def_z']:+.2f})")
-                st.markdown(f"**Verified players:** {g['A_Known']}/17")
+                st.markdown(f"**Attack:** #{g['A_Atk_rank']} (z={g['A_Atk_z']:+.2f})")
+                st.markdown(f"**Defence:** #{g['A_Def_rank']} (z={g['A_Def_z']:+.2f})")
+                st.markdown(f"**Last 5:** {a_rf['recent_scored']} scored / {a_rf['recent_conceded']} conceded")
                 st.caption(f"Outs: {g['A_Outs']}")
 
             st.markdown("---")
@@ -809,7 +613,7 @@ with tab_detail:
                 f"Attack edge:   Home Atk z({g['H_Atk_z']:+.2f}) - Away Def z({g['A_Def_z']:+.2f}) = {g['Atk_Edge']:+.3f}  x {attack_w:.2f}\n"
                 f"Defence edge:  Home Def z({g['H_Def_z']:+.2f}) - Away Atk z({g['A_Atk_z']:+.2f}) = {g['Def_Edge']:+.3f}  x {defence_w:.2f}\n"
                 f"Form edge:     Win% ({h_season['W']/h_season['P']*100:.0f}% - {a_season['W']/a_season['P']*100:.0f}%) = {g['Form_Edge']:+.3f}  x {form_w:.2f}\n"
-                f"Home base:     1.000  x {home_w:.2f}\n"
+                f"Home base:     0.150  x {home_w:.2f}\n"
                 f"Ref context:   {g['Ref_Boost']:+.1f}pp / 200 = {g['Ref_Edge']:+.3f}  x {context_w:.2f}\n"
                 f"{'='*55}\n"
                 f"Composite score: {g['Score']:+.4f}  ->  logistic  ->  {g['Home']} {g['Home_Prob']:.1%}\n"
@@ -818,26 +622,27 @@ with tab_detail:
             )
 
 
-# ═══════════════════════  POWER RANKINGS  ════════════════════════════════════
+# =========================  POWER RANKINGS  ===================================
 with tab_power:
-    st.subheader("Round 15 Lineup Power Rankings")
-    st.caption("Based on actual lineup strength, not season averages. Accounts for Origin absences.")
+    st.subheader("Team Power Rankings (All 17 Teams)")
+    st.caption("Based on NRL.com team stats + recent scoring form adjustment. Higher z = stronger.")
 
     pr_data = []
     for team, data in sorted(team_strengths.items(), key=lambda x: x[1]["atk_z"], reverse=True):
         s = SEASON[team]
+        rf = RECENT_FORM[team]
         pr_data.append({
             "Team": team, "Atk Z": data["atk_z"], "Def Z": data["def_z"],
             "Atk#": data["atk_rank"], "Def#": data["def_rank"],
             "Win%": round(s["W"]/s["P"]*100, 1),
-            "Verified": f"{data['known']}/17",
+            "L5 Scored": rf["recent_scored"], "L5 Conceded": rf["recent_conceded"],
         })
     pr_df = pd.DataFrame(pr_data)
 
     col1, col2 = st.columns(2)
     with col1:
         atk = pr_df.sort_values("Atk Z", ascending=True)
-        fig_a = px.bar(atk, x="Atk Z", y="Team", orientation="h", title="Lineup Attack Power",
+        fig_a = px.bar(atk, x="Atk Z", y="Team", orientation="h", title="Attack Power (z-score)",
             color="Atk Z", color_continuous_scale="Greens", template="plotly_dark")
         fig_a.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
             coloraxis_showscale=False, yaxis_title="")
@@ -845,19 +650,20 @@ with tab_power:
 
     with col2:
         dfe = pr_df.sort_values("Def Z", ascending=True)
-        fig_d = px.bar(dfe, x="Def Z", y="Team", orientation="h", title="Lineup Defence Power",
+        fig_d = px.bar(dfe, x="Def Z", y="Team", orientation="h", title="Defence Power (z-score)",
             color="Def Z", color_continuous_scale="Blues", template="plotly_dark")
         fig_d.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
             coloraxis_showscale=False, yaxis_title="")
         st.plotly_chart(fig_d, use_container_width=True)
 
     st.dataframe(
-        pr_df.style.format({"Atk Z": "{:+.2f}", "Def Z": "{:+.2f}", "Win%": "{:.0f}%"}),
+        pr_df.style.format({"Atk Z": "{:+.2f}", "Def Z": "{:+.2f}", "Win%": "{:.0f}%",
+                           "L5 Scored": "{:.1f}", "L5 Conceded": "{:.1f}"}),
         use_container_width=True, hide_index=True,
     )
 
     fig_scatter = px.scatter(pr_df, x="Atk Z", y="Def Z", text="Team",
-        title="Attack vs Defence (top-right = strongest lineup)", template="plotly_dark",
+        title="Attack vs Defence (top-right = strongest)", template="plotly_dark",
         color="Win%", color_continuous_scale="RdYlGn")
     fig_scatter.update_traces(textposition="top center", marker=dict(size=12))
     fig_scatter.update_layout(plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
@@ -867,10 +673,10 @@ with tab_power:
     st.plotly_chart(fig_scatter, use_container_width=True)
 
 
-# ═══════════════════════  BACKTESTING  ════════════════════════════════════════
+# =========================  BACKTESTING  ======================================
 with tab_backtest:
     st.subheader("Self-Tuning Model: Rounds 1-14 Backtest")
-    st.markdown("Tests current weights against **108 completed matches** using player-stat team strengths + evolving form. "
+    st.markdown("Tests current weights against **108 completed matches** using team-level z-scores + evolving form. "
                 "Hit 'Optimize' to find the weight combination that maximizes prediction accuracy.")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -909,7 +715,7 @@ with tab_backtest:
 
     st.markdown("---")
     st.subheader("Weight Optimizer")
-    st.markdown("Grid searches ~3,000 weight combinations to find the set that maximizes backtest accuracy against all 108 matches.")
+    st.markdown("Grid searches ~3,600 weight combinations to find optimal parameters.")
 
     if st.button("Optimize Weights (takes ~10s)", type="primary"):
         with st.spinner("Searching optimal parameters..."):
@@ -945,30 +751,33 @@ with tab_backtest:
                 use_container_width=True, hide_index=True)
 
 
-# ═══════════════════════  METHODOLOGY  ═══════════════════════════════════════
+# =========================  METHODOLOGY  ======================================
 with tab_method:
     st.subheader("How It Works")
     st.markdown("""
-**Data source:** Individual player stats from [nrl.com/stats/players](https://www.nrl.com/stats/players/) across 18 statistical categories (top 50 players per category). Team lists from [nrl.com/draw](https://www.nrl.com/draw/) match centre pages. Scraped 11 June 2026.
+**Data source:** Team aggregate per-game stats from [nrl.com/stats/teams](https://www.nrl.com/stats/) for all 17 NRL teams. Scraped 11 June 2026 via same-origin fetch of NRL.com q-data attributes.
 
-**The key innovation:** Instead of using team season averages (which don't change when a star player is out for Origin), this model sums the actual per-game stats of the 17 players named in each Round 15 lineup. When David Fifita or Reece Walsh are missing, their stats are gone -- replaced by the actual stats of whoever replaces them.
+**Why team stats, not player stats?** Player-level stats (top-50 leaderboards) only cover star performers, leaving 50%+ of players estimated via position defaults. Team aggregate stats from NRL.com cover 100% of actual on-field output for all 17 teams. No estimation needed.
 
-**14 stats tracked per player (per game):**
-Run Metres, Tackles, Missed Tackles, Tackle Breaks, Post Contact Metres, Linebreaks, Try Assists, Offloads, Points, Tries, Errors, All Runs, Kick Metres, Ineffective Tackles
+**14 stats tracked per team (per game):**
+Points, Tries, Linebreaks, Tackle Breaks, Post Contact Metres, Try Assists, Offloads, Run Metres, All Runs, Tackles, Missed Tackles, Ineffective Tackles, Errors, Kick Metres
 
-**Player data coverage:** 82 of 170 Round 15 players appear in NRL.com's top-50 leaderboards. These are the stars and key contributors whose stats drive team differentiation. The remaining 88 (mostly bench players and Origin replacements) use position-based estimates derived from league averages. This is by design: when a team loses a top-50 calibre player to Origin and replaces them with an uncapped player, the model correctly registers the strength drop.
+**Recent form weighting (last 5 games):**
+For each team, the last 5 completed matches are extracted from the 108-match results database. Average points scored and conceded in these 5 games are compared against the season average. The z-scores are adjusted by 30% of the trend factor, giving recent performance more influence than early-season results.
 
-**Attack composite z-score** sums per-game: Run Metres + Tackle Breaks + Post Contact Metres + Linebreaks (x1.5) + Try Assists (x1.2) + Offloads + Points
+**Attack composite z-score:** Run Metres + Tackle Breaks + PCM + Linebreaks (x1.5) + Try Assists (x1.2) + Offloads + Points, adjusted by recent attacking trend
 
-**Defence composite z-score** sums per-game: Tackles (positive) + Missed Tackles (inverted) + Ineffective Tackles (inverted) + Errors (inverted)
+**Defence composite z-score:** Tackles (positive) + Missed Tackles (inverted) + Ineffective Tackles (inverted) + Errors (inverted), adjusted by recent defensive trend
 
 **Match prediction:**
-1. Lineup attack z vs opponent lineup defence z = attack edge
-2. Lineup defence z vs opponent lineup attack z = defence edge
+1. Team attack z vs opponent defence z = attack edge
+2. Team defence z vs opponent attack z = defence edge
 3. Season win% differential = form edge
-4. Home ground advantage = flat base
+4. Home ground advantage = flat base (0.15)
 5. Referee historical bias = context edge
-6. Weighted composite through logistic function, clamped 20-88%
+6. Weighted composite through logistic function (scale 2.0), clamped 25-82%
+
+**Self-tuning:** Backtesting engine replays all 108 matches from Rounds 1-14 with evolving W/L form. Grid search optimizer tests ~3,600 weight combinations to find the set that maximizes historical accuracy. Current optimized accuracy: 63.4%.
 
 **Edge** = Model probability minus market implied probability (1/odds). Positive = market underpricing.
     """)
@@ -977,20 +786,10 @@ Run Metres, Tackles, Missed Tackles, Tackle Breaks, Post Contact Metres, Linebre
     st.markdown("""
 | Data | Source | Date |
 |------|--------|------|
-| Individual player stats (18 categories) | [nrl.com/stats/players](https://www.nrl.com/stats/players/) | 11 June 2026 |
-| Round 15 team lists (5 matches) | [nrl.com/draw](https://www.nrl.com/draw/) match centre | 11 June 2026 |
-| Market odds | Sportsbet (from nrl.com draw page) | 11 June 2026 |
-| Referee bias | Existing dashboard historical data | Cumulative |
+| Team stats (14 categories, 17 teams) | [nrl.com/stats/teams](https://www.nrl.com/stats/) | 11 June 2026 |
+| Match results (108 games, R1-14) | Existing dashboard | Cumulative |
+| Market odds (Round 15) | Sportsbet via nrl.com | 11 June 2026 |
+| Referee bias data | Existing dashboard | Cumulative |
     """)
-
-    st.subheader("NRL.com Stat IDs Used")
-    st.code(
-        "Points: 76  |  Tries: 38  |  Linebreaks: 30  |  Tackle Breaks: 29\n"
-        "Post Contact Metres: 1000112  |  Try Assists: 35  |  Offloads: 28\n"
-        "Tackles: 3  |  Missed Tackles: 4  |  Ineffective Tackles: 1000003\n"
-        "Run Metres: 1000037  |  All Runs: 1000038  |  Kick Metres: 32\n"
-        "Errors: 37  |  Penalties: 1000026  |  Linebreak Assists: 31\n"
-        "All Receipts: 1000028  |  Dummy Half Runs: 81"
-    )
 
     st.caption("Model is exploratory. Not financial advice. Gamble responsibly.")
