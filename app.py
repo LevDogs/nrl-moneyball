@@ -20,8 +20,10 @@ st.markdown("""<style>
     .pass-card {background: #111820; border: 1px solid #1e2a38; border-radius: 10px; padding: 14px; margin-bottom: 10px}
     .tag {display:inline-block; padding:2px 8px; border-radius:6px; font-size:0.75rem; font-weight:700; margin-right:6px}
     .tag-strong {background:#b45309; color:#fff}
-    .tag-value {background:#1a6334; color:#4ade80}
-    .tag-pass {background:#1e2a38; color:#6b7280}
+    .tag-confident {background:#1a6334; color:#4ade80}
+    .tag-lean {background:#1e3a5f; color:#93c5fd}
+    .tag-skip {background:#1e2a38; color:#6b7280}
+    .tag-value {background:#065f46; color:#6ee7b7; margin-left:4px}
     .player-row {display:flex; justify-content:space-between; padding:4px 8px; border-bottom:1px solid #1e2a38; font-size:0.85rem}
     .player-known {color:#e5e7eb}
     .player-est {color:#6b7280; font-style:italic}
@@ -397,16 +399,19 @@ def calculate_match(m):
 
     ref_edge = m["Ref_Boost"] / 200
 
+    known_pct = (h["known"] + a["known"]) / (h["total"] + a["total"])
+    confidence = 0.6 + 0.4 * known_pct
+
     score = (
         attack_w * atk_edge
         + defence_w * def_edge
         + form_w * form_edge
-        + home_w * 1.0
+        + home_w * 0.15
         + context_w * ref_edge
-    )
+    ) * confidence
 
-    prob = 1 / (1 + exp(-score * 3.2))
-    prob = max(0.20, min(0.88, prob))
+    prob = 1 / (1 + exp(-score * 1.8))
+    prob = max(0.25, min(0.82, prob))
     return prob, atk_edge, def_edge, form_edge, ref_edge, score
 
 results = []
@@ -419,20 +424,20 @@ for m in MATCHES:
     fair_h = round(1 / prob, 2) if prob > 0 else 99.0
     fair_a = round(1 / (1 - prob), 2) if prob < 1 else 99.0
 
-    if edge >= 8:
-        bet, strength = f"{m['Home']} H2H", "STRONG"
-    elif edge >= 4:
-        bet, strength = f"{m['Home']} H2H", "VALUE"
-    elif edge >= 2:
-        bet, strength = f"{m['Home']} H2H", "lean"
-    elif away_edge >= 8:
-        bet, strength = f"{m['Away']} H2H", "STRONG"
-    elif away_edge >= 4:
-        bet, strength = f"{m['Away']} H2H", "VALUE"
-    elif away_edge >= 2:
-        bet, strength = f"{m['Away']} H2H", "lean"
+    winner_prob = max(prob, 1 - prob)
+    pick_home = prob >= 0.5
+    pick = m["Home"] if pick_home else m["Away"]
+    best_edge = edge if pick_home else away_edge
+    has_value = best_edge >= 3
+
+    if winner_prob >= 0.65:
+        bet, strength = f"{pick} H2H", "STRONG"
+    elif winner_prob >= 0.58:
+        bet, strength = f"{pick} H2H", "CONFIDENT"
+    elif winner_prob >= 0.53:
+        bet, strength = f"{pick} H2H", "LEAN"
     else:
-        bet, strength = "Pass", "pass"
+        bet, strength = "Pass", "SKIP"
 
     results.append({
         "Match": f"{m['Home']} vs {m['Away']}",
@@ -442,6 +447,7 @@ for m in MATCHES:
         "Fair_H": fair_h, "Fair_A": fair_a,
         "Mkt_H": m["Mkt_Home"], "Mkt_A": m["Mkt_Away"],
         "Edge_pp": round(edge, 1), "Away_Edge_pp": round(away_edge, 1),
+        "Best_Edge": round(best_edge, 1), "Has_Value": has_value,
         "Ref_Boost": m["Ref_Boost"],
         "Atk_Edge": round(atk, 3), "Def_Edge": round(dfe, 3),
         "Form_Edge": round(frm, 3), "Ref_Edge": round(ref, 3),
@@ -464,28 +470,30 @@ tab_dash, tab_lineups, tab_detail, tab_power, tab_method = st.tabs(
 
 # ═══════════════════════  DASHBOARD  ═══════════════════════════════════════════
 with tab_dash:
-    strong = df[df["Strength"].isin(["STRONG", "VALUE"])]
+    actionable = df[df["Strength"].isin(["STRONG", "CONFIDENT"])]
+    value_count = df[df["Has_Value"]].shape[0]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Round 15 Games", f"{len(df)} (Origin split)")
-    c2.metric("Actionable Bets", len(strong))
-    c3.metric("Avg Edge", f"{strong['Edge_pp'].mean():+.1f}pp" if len(strong) else "0.0pp")
+    c2.metric("Strong/Confident Picks", len(actionable))
+    c3.metric("Market Value Flags", value_count)
     c4.metric("Teams on Bye", "7")
     st.markdown("---")
 
     st.subheader("Round 15 Predictions")
-    show = df[["Match","Home_Prob","Away_Prob","Fair_H","Fair_A","Mkt_H","Mkt_A","Edge_pp","Ref_Boost","Bet","Strength"]].copy()
-    show.columns = ["Match","Home%","Away%","Fair H","Fair A","Mkt H","Mkt A","Edge","Ref","Bet","Rating"]
+    show = df[["Match","Home_Prob","Away_Prob","Fair_H","Fair_A","Mkt_H","Mkt_A","Best_Edge","Has_Value","Ref_Boost","Bet","Strength"]].copy()
+    show["Value"] = show["Has_Value"].map({True: "YES", False: ""})
+    show = show.drop(columns=["Has_Value"])
+    show.columns = ["Match","Home%","Away%","Fair H","Fair A","Mkt H","Mkt A","Edge","Ref","Bet","Signal","Value"]
 
-    def style_edge(val):
-        if isinstance(val, (int, float)):
-            if val >= 4: return "background-color:#0d3320; color:#4ade80; font-weight:700"
-            if val <= -4: return "background-color:#3b1010; color:#f87171; font-weight:700"
-        return ""
-
-    def style_rating(val):
+    def style_signal(val):
         if val == "STRONG": return "background-color:#b45309; color:#fff; font-weight:700"
-        if val == "VALUE": return "background-color:#0d3320; color:#4ade80; font-weight:700"
+        if val == "CONFIDENT": return "background-color:#0d3320; color:#4ade80; font-weight:700"
+        if val == "LEAN": return "background-color:#1e2a38; color:#93c5fd; font-weight:600"
         return "color:#6b7280"
+
+    def style_value(val):
+        if val == "YES": return "background-color:#0d3320; color:#4ade80; font-weight:700"
+        return ""
 
     st.dataframe(
         show.style.format({
@@ -493,19 +501,28 @@ with tab_dash:
             "Fair H": "${:.2f}", "Fair A": "${:.2f}",
             "Mkt H": "${:.2f}", "Mkt A": "${:.2f}",
             "Edge": "{:+.1f}", "Ref": "{:+.1f}",
-        }).map(style_edge, subset=["Edge"]).map(style_rating, subset=["Rating"]),
+        }).map(style_signal, subset=["Signal"]).map(style_value, subset=["Value"]),
         use_container_width=True, hide_index=True, height=250,
     )
     st.markdown("---")
 
     st.subheader("Selections")
     for _, r in df.iterrows():
-        if r["Strength"] == "STRONG":
-            card_class, tag = "bet-card-strong", '<span class="tag tag-strong">STRONG</span>'
-        elif r["Strength"] == "VALUE":
-            card_class, tag = "bet-card", '<span class="tag tag-value">VALUE</span>'
+        sig = r["Strength"]
+        if sig == "STRONG":
+            card_class = "bet-card-strong"
+            tag = '<span class="tag tag-strong">STRONG</span>'
+        elif sig == "CONFIDENT":
+            card_class = "bet-card"
+            tag = '<span class="tag tag-confident">CONFIDENT</span>'
+        elif sig == "LEAN":
+            card_class = "bet-card"
+            tag = '<span class="tag tag-lean">LEAN</span>'
         else:
-            card_class, tag = "pass-card", '<span class="tag tag-pass">PASS</span>'
+            card_class = "pass-card"
+            tag = '<span class="tag tag-skip">SKIP</span>'
+
+        value_tag = ' <span class="tag tag-value">VALUE</span>' if r["Has_Value"] else ""
 
         pick = r["Home"] if r["Home_Prob"] >= 0.5 else r["Away"]
         prob = r["Home_Prob"] if r["Home_Prob"] >= 0.5 else r["Away_Prob"]
@@ -514,17 +531,17 @@ with tab_dash:
 
         st.markdown(f"""<div class="{card_class}">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
-                <div>{tag} <b style="font-size:1.1rem; color:#e5e7eb">{r['Bet']}</b>
+                <div>{tag}{value_tag} <b style="font-size:1.1rem; color:#e5e7eb">{r['Bet']}</b>
                     <span style="color:#6b7280; margin-left:8px">{r['Match']}</span></div>
-                <div style="font-size:1.1rem; font-weight:700; color:{'#4ade80' if r['Edge_pp'] > 0 else '#f87171'}">{r['Edge_pp']:+.1f}pp</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#60a5fa">{prob:.0%}</div>
             </div>
             <div style="display:flex; gap:20px; color:#9ca3af; font-size:0.85rem; flex-wrap:wrap">
-                <span>Model: <b style="color:#60a5fa">{prob:.0%}</b></span>
                 <span>Fair: <b style="color:#60a5fa">${fair:.2f}</b></span>
                 <span>Market: <b style="color:#e5e7eb">${mkt:.2f}</b></span>
+                <span>Edge: <b style="color:{'#4ade80' if r['Best_Edge'] >= 3 else '#9ca3af'}">{r['Best_Edge']:+.1f}pp</b></span>
                 <span>Ref: <b style="color:#c084fc">{r['Ref_Boost']:+.1f}pp</b></span>
-                <span>{r['Home']} Atk#{r['H_Atk_rank']} Def#{r['H_Def_rank']} ({r['H_Known']}/17 verified)</span>
-                <span>{r['Away']} Atk#{r['A_Atk_rank']} Def#{r['A_Def_rank']} ({r['A_Known']}/17 verified)</span>
+                <span>{r['Home']} Atk#{r['H_Atk_rank']} Def#{r['H_Def_rank']} ({r['H_Known']}/17)</span>
+                <span>{r['Away']} Atk#{r['A_Atk_rank']} Def#{r['A_Def_rank']} ({r['A_Known']}/17)</span>
             </div>
             <div style="color:#6b7280; font-size:0.8rem; margin-top:6px">Outs: {r['H_Outs']} | {r['A_Outs']}</div>
         </div>""", unsafe_allow_html=True)
@@ -539,9 +556,9 @@ with tab_dash:
         fig.add_hline(y=0.5, line_dash="dot", line_color="#334155")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
-        colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Edge_pp"]]
-        fig2 = go.Figure(go.Bar(x=df["Match"], y=df["Edge_pp"], marker_color=colors))
-        fig2.update_layout(title="Edge Map (pp)", template="plotly_dark",
+        colors = ["#22c55e" if e >= 3 else ("#ef4444" if e <= -3 else "#6b7280") for e in df["Best_Edge"]]
+        fig2 = go.Figure(go.Bar(x=df["Match"], y=df["Best_Edge"], marker_color=colors))
+        fig2.update_layout(title="Market Value Edge (pp)", template="plotly_dark",
             plot_bgcolor="#0a0e14", paper_bgcolor="#0a0e14",
             yaxis_title="Edge (pp)", margin=dict(l=40,r=20,t=40,b=60))
         fig2.add_hline(y=0, line_color="#334155")
