@@ -35,11 +35,11 @@ st.markdown("**Round 15, 2026 -- Origin II Split Round -- Individual Player Stat
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Model Weights")
-attack_w = st.sidebar.slider("Attack Weight", 0.25, 0.60, 0.40)
+attack_w = st.sidebar.slider("Attack Weight", 0.25, 0.60, 0.30)
 defence_w = st.sidebar.slider("Defence Weight", 0.10, 0.40, 0.25)
-form_w = st.sidebar.slider("Form Weight", 0.05, 0.30, 0.15)
-home_w = st.sidebar.slider("Home Advantage", 0.05, 0.20, 0.10)
-context_w = st.sidebar.slider("Context (Ref + Origin)", 0.02, 0.20, 0.10)
+form_w = st.sidebar.slider("Form Weight", 0.05, 0.30, 0.30)
+home_w = st.sidebar.slider("Home Advantage", 0.05, 0.20, 0.08)
+context_w = st.sidebar.slider("Context (Ref + Origin)", 0.02, 0.20, 0.07)
 wt = attack_w + defence_w + form_w + home_w + context_w
 st.sidebar.caption(f"Sum: {wt:.2f}" + (" ok" if abs(wt - 1.0) <= 0.03 else " -- adjust to ~1.00"))
 
@@ -473,7 +473,7 @@ def calculate_match(m):
         + context_w * ref_edge
     ) * confidence
 
-    prob = 1 / (1 + exp(-score * 1.8))
+    prob = 1 / (1 + exp(-score * 2.0))
     prob = max(0.25, min(0.82, prob))
     return prob, atk_edge, def_edge, form_edge, ref_edge, score
 
@@ -613,7 +613,7 @@ def optimize_weights():
     return best_acc, best_brier, best_params
 
 bt_accuracy, bt_brier, bt_correct, bt_total, bt_rounds = backtest_model(
-    attack_w, defence_w, form_w, home_w, context_w, 1.8, 0.15
+    attack_w, defence_w, form_w, home_w, context_w, 2.0, 0.15
 )
 
 # ═══════════════════════  TABS  ════════════════════════════════════════════════
@@ -923,7 +923,7 @@ with tab_backtest:
             oc1.metric("Defence Weight", f"{opt_params['defence_w']:.2f}", f"{opt_params['defence_w'] - defence_w:+.2f}")
             oc2.metric("Form Weight", f"{opt_params['form_w']:.2f}", f"{opt_params['form_w'] - form_w:+.2f}")
             oc2.metric("Home Weight", f"{opt_params['home_w']:.2f}", f"{opt_params['home_w'] - home_w:+.2f}")
-            oc3.metric("Logistic Scale", f"{opt_params['scale']:.1f}", f"{opt_params['scale'] - 1.8:+.1f}")
+            oc3.metric("Logistic Scale", f"{opt_params['scale']:.1f}", f"{opt_params['scale'] - 2.0:+.1f}")
             oc3.metric("Home Constant", f"{opt_params['home_const']:.2f}", f"{opt_params['home_const'] - 0.15:+.2f}")
 
             st.info("Set the sidebar sliders to these values to apply the optimized weights to Round 15 predictions.")
